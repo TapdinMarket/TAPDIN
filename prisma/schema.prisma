@@ -1,0 +1,339 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ───────────────────────── Users & auth ─────────────────────────
+
+enum Role {
+  CUSTOMER
+  STAFF
+  ADMIN
+}
+
+enum AccountType {
+  PERSONAL
+  BUSINESS
+}
+
+model User {
+  id           String      @id @default(cuid())
+  name         String
+  email        String      @unique
+  phone        String?
+  passwordHash String
+  role         Role        @default(CUSTOMER)
+  accountType  AccountType @default(PERSONAL)
+  locale       String      @default("az")
+  adminNotes   String?
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  sessions        Session[]
+  orders          Order[]
+  businessProfile BusinessProfile?
+  internalNotes   InternalNote[]
+  events          OrderEvent[]
+
+  @@index([role])
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  tokenHash String   @unique
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+/// Future-ready B2B module: business accounts get their own commission rate
+/// and are quoted as properly declared commercial imports (never split across individuals).
+model BusinessProfile {
+  id                String   @id @default(cuid())
+  userId            String   @unique
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  companyName       String
+  taxId             String?
+  commissionPercent Decimal? @db.Decimal(5, 2)
+  createdAt         DateTime @default(now())
+}
+
+// ───────────────────────── Catalogue of sources ─────────────────────────
+
+/// Pricing rules differ per sourcing region (China / USA / Europe ...).
+model Region {
+  key                  String   @id
+  name                 String
+  enabled              Boolean  @default(true)
+  defaultCurrency      String
+  commissionPercent    Decimal  @db.Decimal(5, 2)
+  minCommissionAzn     Decimal  @db.Decimal(10, 2)
+  cargoPerKgUsd        Decimal  @db.Decimal(10, 2)
+  minBillableWeightKg  Decimal  @db.Decimal(6, 2)
+  /// Free-text guidance for staff. Customs rules must be verified against current regulations.
+  customsNote          String?
+  sortOrder            Int      @default(0)
+  updatedAt            DateTime @updatedAt
+
+  marketplaces Marketplace[]
+}
+
+model Marketplace {
+  key          String   @id
+  name         String
+  regionKey    String
+  region       Region   @relation(fields: [regionKey], references: [key])
+  /// Hostname suffixes used for detection, e.g. ["taobao.com", "tmall.com"]
+  hostPatterns String[]
+  enabled      Boolean  @default(true)
+  sortOrder    Int      @default(0)
+}
+
+model ExchangeRate {
+  currency  String   @id
+  rateToAzn Decimal  @db.Decimal(12, 6)
+  updatedAt DateTime @updatedAt
+}
+
+/// Admin-configurable order statuses. `key` is stable; labels and order are editable.
+model OrderStatus {
+  key             String  @id
+  labelAz         String
+  labelRu         String
+  labelEn         String
+  sortOrder       Int
+  active          Boolean @default(true)
+  /// System statuses drive business logic (quotes, payments) and cannot be removed.
+  isSystem        Boolean @default(false)
+  /// Shown as a step on the customer timeline.
+  showOnTimeline  Boolean @default(true)
+
+  orders Order[]
+}
+
+model Setting {
+  id    String @id @default(cuid())
+  key   String @unique
+  value Json
+}
+
+// ───────────────────────── Orders ─────────────────────────
+
+enum OrderType {
+  PERSONAL
+  B2B
+}
+
+enum SubmissionMethod {
+  URL
+  IMAGE
+}
+
+model Order {
+  id                 String           @id @default(cuid())
+  number             Int              @unique @default(autoincrement())
+  userId             String
+  user               User             @relation(fields: [userId], references: [id])
+  type               OrderType        @default(PERSONAL)
+  method             SubmissionMethod
+  sourceUrl          String?
+  /// Marketplace key if detected or chosen; null = unknown / independent store.
+  sourceMarketplace  String?
+  regionKey          String?
+  productTitle       String?
+  productDescription String?
+  variant            String?
+  sizeColor          String?
+  quantity           Int              @default(1)
+  instructions       String?
+  statusKey          String
+  status             OrderStatus      @relation(fields: [statusKey], references: [key])
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+
+  media      OrderMedia[]
+  quotations Quotation[]
+  payments   Payment[]
+  charges    AdditionalCharge[]
+  tracking   Tracking[]
+  events     OrderEvent[]
+  notes      InternalNote[]
+
+  @@index([userId])
+  @@index([statusKey])
+  @@index([createdAt])
+}
+
+enum MediaKind {
+  CUSTOMER_REFERENCE
+  INSPECTION_PHOTO
+  INSPECTION_VIDEO
+}
+
+model OrderMedia {
+  id         String    @id @default(cuid())
+  orderId    String
+  order      Order     @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  /// Opaque key inside the storage adapter (never a public URL).
+  storageKey String
+  mimeType   String
+  sizeBytes  Int
+  kind       MediaKind
+  createdAt  DateTime  @default(now())
+
+  @@index([orderId])
+}
+
+enum QuotationStatus {
+  SENT
+  ACCEPTED
+  REJECTED
+  EXPIRED
+  SUPERSEDED
+}
+
+enum CommissionBasis {
+  PRODUCT
+  PRODUCT_AND_DOMESTIC
+  SUBTOTAL
+}
+
+/// Immutable snapshot of a price offer. Every amount is computed on the server.
+model Quotation {
+  id                       String          @id @default(cuid())
+  orderId                  String
+  order                    Order           @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  version                  Int
+  status                   QuotationStatus @default(SENT)
+
+  // Inputs (source currency)
+  currency                 String
+  exchangeRate             Decimal         @db.Decimal(12, 6)
+  unitPrice                Decimal         @db.Decimal(12, 2)
+  quantity                 Int
+  domesticShipping         Decimal         @db.Decimal(12, 2)
+  weightKg                 Decimal?        @db.Decimal(8, 2)
+  commissionPercent        Decimal         @db.Decimal(5, 2)
+  commissionBasis          CommissionBasis
+  minCommissionAzn         Decimal         @db.Decimal(10, 2)
+
+  // Computed (AZN)
+  productCost              Decimal         @db.Decimal(12, 2) /// unitPrice × quantity, source currency
+  productCostAzn           Decimal         @db.Decimal(12, 2)
+  domesticShippingAzn      Decimal         @db.Decimal(12, 2)
+  internationalShippingAzn Decimal         @db.Decimal(12, 2)
+  serviceFeeAzn            Decimal         @db.Decimal(12, 2)
+  sourcingFeeAzn           Decimal         @db.Decimal(12, 2)
+  customsChargesAzn        Decimal         @db.Decimal(12, 2)
+  otherExpensesAzn         Decimal         @db.Decimal(12, 2)
+  totalAzn                 Decimal         @db.Decimal(12, 2)
+
+  noteToCustomer           String?
+  expiresAt                DateTime
+  createdAt                DateTime        @default(now())
+  decidedAt                DateTime?
+
+  payments Payment[]
+
+  @@unique([orderId, version])
+  @@index([orderId])
+}
+
+enum PaymentStatus {
+  PENDING
+  CONFIRMED
+  FAILED
+  REFUNDED
+}
+
+enum PaymentMethod {
+  BANK_TRANSFER
+  CARD_TO_CARD
+  CASH
+  ONLINE
+}
+
+/// Payments are recorded and confirmed by staff. No automatic "success" exists
+/// until a real payment provider adapter is connected.
+model Payment {
+  id            String        @id @default(cuid())
+  orderId       String
+  order         Order         @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  quotationId   String?
+  quotation     Quotation?    @relation(fields: [quotationId], references: [id])
+  amount        Decimal       @db.Decimal(12, 2)
+  currency      String        @default("AZN")
+  status        PaymentStatus @default(PENDING)
+  paymentMethod PaymentMethod
+  reference     String?
+  createdAt     DateTime      @default(now())
+  confirmedAt   DateTime?
+
+  @@index([orderId])
+}
+
+enum ChargeStatus {
+  DUE
+  WAIVED
+}
+
+/// Charges that appear after the quotation was confirmed (e.g. re-weighing, customs difference).
+model AdditionalCharge {
+  id          String       @id @default(cuid())
+  orderId     String
+  order       Order        @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  description String
+  amountAzn   Decimal      @db.Decimal(12, 2)
+  status      ChargeStatus @default(DUE)
+  createdAt   DateTime     @default(now())
+
+  @@index([orderId])
+}
+
+model Tracking {
+  id             String   @id @default(cuid())
+  orderId        String
+  order          Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  trackingNumber String
+  carrier        String
+  status         String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([orderId])
+}
+
+model OrderEvent {
+  id          String   @id @default(cuid())
+  orderId     String
+  order       Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  /// Status key at the time of the event (if it was a status change).
+  status      String?
+  description String
+  /// Customer-facing events are shown in the order history; others are internal audit.
+  visible     Boolean  @default(true)
+  actorId     String?
+  actor       User?    @relation(fields: [actorId], references: [id])
+  createdAt   DateTime @default(now())
+
+  @@index([orderId])
+}
+
+model InternalNote {
+  id        String   @id @default(cuid())
+  orderId   String
+  order     Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  authorId  String
+  author    User     @relation(fields: [authorId], references: [id])
+  body      String
+  createdAt DateTime @default(now())
+
+  @@index([orderId])
+}

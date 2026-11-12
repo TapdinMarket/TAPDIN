@@ -1,0 +1,53 @@
+import type { Metadata } from 'next';
+import { ArrowRight } from 'lucide-react';
+import { ButtonLink, Container, Eyebrow } from '@/components/ui';
+import { getI18n } from '@/i18n/server';
+
+export async function generateMetadata(): Promise<Metadata> {
+  return { title: (await getI18n()).m.nav.how };
+}
+
+export default async function HowItWorksPage() {
+  const { m } = await getI18n();
+
+  return (
+    <Container className="max-w-4xl py-14 lg:py-20">
+      <Eyebrow>{m.nav.how}</Eyebrow>
+      <h1 className="mt-4 text-4xl font-semibold tracking-[-0.03em] sm:text-5xl">{m.home.how.subtitle}</h1>
+
+      <ol className="mt-14">
+        {m.steps.map((s, i) => (
+          <li key={s.title} className="relative grid grid-cols-[3rem_1fr] gap-x-4 pb-12 last:pb-0 sm:grid-cols-[4.5rem_1fr]">
+            {i < m.steps.length - 1 && <span className="absolute top-12 bottom-0 left-6 w-px bg-line-strong sm:left-7" aria-hidden />}
+            <span className="tabular flex size-12 items-center justify-center rounded-full border border-line-strong bg-surface font-display font-medium sm:size-14">
+              {i + 1}
+            </span>
+            <div className="pt-2.5 sm:pt-3.5">
+              <h2 className="text-xl font-semibold sm:text-2xl">{s.title}</h2>
+              <p className="mt-2 max-w-xl leading-relaxed text-ink-soft">{s.text}</p>
+            </div>
+          </li>
+        ))}
+      </ol>
+
+      <div className="mt-16 grid gap-px overflow-hidden rounded-card border border-line bg-line sm:grid-cols-3">
+        {m.home.benefits.items.slice(0, 3).map((b) => (
+          <div key={b.title} className="bg-surface p-6">
+            <p className="font-medium">{b.title}</p>
+            <p className="mt-2 text-sm leading-relaxed text-muted">{b.text}</p>
+          </div>
+        ))}
+      </div>
+
+      <div className="mt-12 flex flex-wrap gap-3">
+        <ButtonLink href="/order" size="lg">
+          {m.nav.order}
+          <ArrowRight className="size-4" aria-hidden />
+        </ButtonLink>
+        <ButtonLink href="/pricing" variant="secondary" size="lg">
+          {m.nav.pricing}
+        </ButtonLink>
+      </div>
+    </Container>
+  );
+}
