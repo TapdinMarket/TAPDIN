@@ -29,6 +29,9 @@ model User {
   role         Role        @default(CUSTOMER)
   accountType  AccountType @default(PERSONAL)
   locale       String      @default("az")
+  /// Order updates by email (on by default) and WhatsApp (explicit opt-in only).
+  notifyEmail    Boolean   @default(true)
+  notifyWhatsApp Boolean   @default(false)
   adminNotes   String?
   createdAt    DateTime    @default(now())
   updatedAt    DateTime    @updatedAt
@@ -38,6 +41,8 @@ model User {
   businessProfile BusinessProfile?
   internalNotes   InternalNote[]
   events          OrderEvent[]
+  notifications   Notification[]
+  passwordResets  PasswordReset[]
 
   @@index([role])
 }
@@ -67,11 +72,20 @@ model BusinessProfile {
 
 // ───────────────────────── Catalogue of sources ─────────────────────────
 
-/// Pricing rules differ per sourcing region (China / USA / Europe ...).
+/// Whether customers can order from a region. COMING_SOON regions stay visible as announced directions,
+/// but the API refuses orders and staff cannot send quotations for them.
+enum RegionStatus {
+  ACTIVE
+  COMING_SOON
+}
+
+/// Pricing rules differ per sourcing region (China / Russia / USA / Europe ...).
 model Region {
   key                  String   @id
   name                 String
   enabled              Boolean  @default(true)
+  /// Single source of truth for availability, read by the site, the order API and the admin.
+  status               RegionStatus @default(ACTIVE)
   defaultCurrency      String
   commissionPercent    Decimal  @db.Decimal(5, 2)
   minCommissionAzn     Decimal  @db.Decimal(10, 2)
@@ -99,6 +113,8 @@ model Marketplace {
 model ExchangeRate {
   currency  String   @id
   rateToAzn Decimal  @db.Decimal(12, 6)
+  /// CBAR = official rate of the Central Bank of Azerbaijan; MANUAL = typed in Settings.
+  source    String   @default("MANUAL")
   updatedAt DateTime @updatedAt
 }
 
@@ -136,28 +152,23 @@ enum SubmissionMethod {
   IMAGE
 }
 
+/// One customer request = one parcel: any number of items, all from the same sourcing region.
 model Order {
   id                 String           @id @default(cuid())
   number             Int              @unique @default(autoincrement())
   userId             String
   user               User             @relation(fields: [userId], references: [id])
   type               OrderType        @default(PERSONAL)
-  method             SubmissionMethod
-  sourceUrl          String?
-  /// Marketplace key if detected or chosen; null = unknown / independent store.
-  sourceMarketplace  String?
+  /// The region every item comes from. Items from different regions cannot share an order (different warehouse).
   regionKey          String?
-  productTitle       String?
-  productDescription String?
-  variant            String?
-  sizeColor          String?
-  quantity           Int              @default(1)
+  /// Order-level note from the customer (delivery, deadline, packaging…). Item details live on OrderItem.
   instructions       String?
   statusKey          String
   status             OrderStatus      @relation(fields: [statusKey], references: [key])
   createdAt          DateTime         @default(now())
   updatedAt          DateTime         @updatedAt
 
+  items      OrderItem[]
   media      OrderMedia[]
   quotations Quotation[]
   payments   Payment[]
@@ -165,10 +176,48 @@ model Order {
   tracking   Tracking[]
   events     OrderEvent[]
   notes      InternalNote[]
+  notifications Notification[]
 
   @@index([userId])
   @@index([statusKey])
   @@index([createdAt])
+}
+
+/// One product in an order: a store link or a photo request.
+model OrderItem {
+  id                String           @id @default(cuid())
+  orderId           String
+  order             Order            @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  position          Int              @default(0)
+  method            SubmissionMethod
+  sourceUrl         String?
+  /// Marketplace key if detected or chosen; null = unknown / independent store.
+  sourceMarketplace String?
+  title             String?
+  description       String?
+  variant           String?
+  sizeColor         String?
+  quantity          Int              @default(1)
+  note              String?
+  /// Staff marked the item as not available at the store: it is left out of the quotation and the parcel.
+  unavailable       Boolean          @default(false)
+  /// What the customer chose for an out-of-stock item: PENDING (not yet), REMOVED (continue without it), REPLACED (a new item took its place).
+  resolution        String?
+  /// Price the customer copied from the store page. Informational only — staff verify it; quotations are
+  /// always calculated server-side by the pricing engine.
+  clientPrice       Decimal?         @db.Decimal(14, 2)
+  clientCurrency    String?
+  /// Smart preview read server-side from the store page. Informational only.
+  previewImageUrl   String?
+  previewPrice      Decimal?         @db.Decimal(14, 2)
+  previewCurrency   String?
+  createdAt         DateTime         @default(now())
+
+  media      OrderMedia[]
+  quoteLines QuotationLine[]
+
+  @@index([orderId])
+  @@index([sourceMarketplace])
 }
 
 enum MediaKind {
@@ -181,6 +230,9 @@ model OrderMedia {
   id         String    @id @default(cuid())
   orderId    String
   order      Order     @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  /// Set for customer photos and screenshots of a specific item; null for order-level media (inspection).
+  itemId     String?
+  item       OrderItem? @relation(fields: [itemId], references: [id], onDelete: Cascade)
   /// Opaque key inside the storage adapter (never a public URL).
   storageKey String
   mimeType   String
@@ -213,19 +265,14 @@ model Quotation {
   version                  Int
   status                   QuotationStatus @default(SENT)
 
-  // Inputs (source currency)
-  currency                 String
-  exchangeRate             Decimal         @db.Decimal(12, 6)
-  unitPrice                Decimal         @db.Decimal(12, 2)
-  quantity                 Int
-  domesticShipping         Decimal         @db.Decimal(12, 2)
+  // Order-level inputs. Per-item prices are in QuotationLine.
+  /// Total billable weight of the parcel.
   weightKg                 Decimal?        @db.Decimal(8, 2)
   commissionPercent        Decimal         @db.Decimal(5, 2)
   commissionBasis          CommissionBasis
   minCommissionAzn         Decimal         @db.Decimal(10, 2)
 
-  // Computed (AZN)
-  productCost              Decimal         @db.Decimal(12, 2) /// unitPrice × quantity, source currency
+  // Computed (AZN). productCostAzn and domesticShippingAzn are the sums of the lines.
   productCostAzn           Decimal         @db.Decimal(12, 2)
   domesticShippingAzn      Decimal         @db.Decimal(12, 2)
   internationalShippingAzn Decimal         @db.Decimal(12, 2)
@@ -233,6 +280,9 @@ model Quotation {
   sourcingFeeAzn           Decimal         @db.Decimal(12, 2)
   customsChargesAzn        Decimal         @db.Decimal(12, 2)
   otherExpensesAzn         Decimal         @db.Decimal(12, 2)
+  /// Optional parcel insurance offered with this quotation (not part of totalAzn). Added as a charge if the customer opts in.
+  insuranceAzn             Decimal         @default(0) @db.Decimal(12, 2)
+  insured                  Boolean         @default(false)
   totalAzn                 Decimal         @db.Decimal(12, 2)
 
   noteToCustomer           String?
@@ -241,6 +291,7 @@ model Quotation {
   decidedAt                DateTime?
 
   payments Payment[]
+  lines    QuotationLine[]
 
   @@unique([orderId, version])
   @@index([orderId])
@@ -336,4 +387,68 @@ model InternalNote {
   createdAt DateTime @default(now())
 
   @@index([orderId])
+}
+
+// ───────────────────────────────────────── Notifications ─────────────────────────────────────────
+
+enum NotificationChannel {
+  EMAIL
+  WHATSAPP
+}
+
+enum NotificationStatus {
+  SENT
+  FAILED
+  /// Not sent on purpose: channel not configured, customer opted out, no phone… The detail field says why.
+  SKIPPED
+}
+
+/// Delivery log of customer notifications, shown to staff on the order page.
+model Notification {
+  id        String              @id @default(cuid())
+  userId    String
+  user      User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  orderId   String?
+  order     Order?              @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  channel   NotificationChannel
+  event     String
+  status    NotificationStatus
+  detail    String?
+  createdAt DateTime            @default(now())
+
+  @@index([orderId])
+}
+
+/// One item's price inside a quotation (source currency + its AZN conversion).
+model QuotationLine {
+  id                  String    @id @default(cuid())
+  quotationId         String
+  quotation           Quotation @relation(fields: [quotationId], references: [id], onDelete: Cascade)
+  itemId              String
+  item                OrderItem @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  position            Int       @default(0)
+  currency            String
+  exchangeRate        Decimal   @db.Decimal(12, 6)
+  unitPrice           Decimal   @db.Decimal(12, 2)
+  quantity            Int
+  domesticShipping    Decimal   @db.Decimal(12, 2)
+  /// unitPrice × quantity, source currency
+  productCost         Decimal   @db.Decimal(12, 2)
+  productCostAzn      Decimal   @db.Decimal(12, 2)
+  domesticShippingAzn Decimal   @db.Decimal(12, 2)
+
+  @@index([quotationId])
+}
+
+/// One-time password reset link (only the hash of the token is stored). Valid for one hour, usable once.
+model PasswordReset {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
 }

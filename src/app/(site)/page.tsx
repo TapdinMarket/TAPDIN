@@ -1,166 +1,222 @@
 import Link from 'next/link';
-import { ArrowRight, ArrowUpRight, Layers, MapPin, Plus, ReceiptText, ScanSearch, Search, ShoppingBag } from 'lucide-react';
+import { ArrowRight, ArrowUpRight, Clock, Plus } from 'lucide-react';
 import { Breakdown } from '@/components/breakdown';
-import { HeroQuickStart } from '@/components/hero-quick-start';
+import { CombineSavings } from '@/components/combine-savings';
+import { WorldMap } from '@/components/globe/world-map';
+import { Hero } from '@/components/hero/hero';
+import { ProcessRail } from '@/components/home/process-rail';
+import { RequestConsole } from '@/components/home/request-console';
 import { Reveal } from '@/components/reveal';
-import { Steps } from '@/components/steps';
-import { Badge, ButtonLink, Card, Container, Eyebrow } from '@/components/ui';
+import { Badge, ButtonLink, Container } from '@/components/ui';
+import { brand } from '@/config/brand';
+import { regionLabel } from '@/i18n/config';
 import { getI18n } from '@/i18n/server';
 import { getExampleQuote } from '@/lib/example-quote';
+import { fmt } from '@/lib/format';
+import { isComingSoon, isPublic } from '@/lib/regions';
 import { getCatalog } from '@/lib/settings';
-
-const benefitIcons = [Search, ShoppingBag, ScanSearch, Layers, ReceiptText, MapPin];
 
 export default async function HomePage() {
   const { m, locale } = await getI18n();
-  const [example, { marketplaces }] = await Promise.all([getExampleQuote(m, locale), getCatalog()]);
+  const [example, catalog] = await Promise.all([getExampleQuote(m, locale), getCatalog()]);
   const h = m.home;
+  const otherStores: Record<string, string> = h.routes.otherStores;
+  // Only regions enabled in admin are presented. COMING_SOON ones stay visible, marked and closed for orders.
+  const regions = catalog.regions
+    .filter(isPublic)
+    .map((r) => ({
+      key: r.key,
+      name: regionLabel(m, r),
+      soon: isComingSoon(r),
+      currency: r.defaultCurrency,
+      commissionPercent: r.commissionPercent,
+      cargoPerKgUsd: r.cargoPerKgUsd,
+      stores: catalog.marketplaces.filter((x) => x.enabled && x.regionKey === r.key).map((x) => x.name),
+      otherStores: otherStores[r.key] ?? '',
+    }));
+  const generic: Record<string, string> = { US: h.hero.usStores, EU: h.hero.euStores };
+  // Every store row links into the real order form with its region preselected.
+  // Announced regions show one generic row ("US stores"), not the store list used for link detection.
+  const gallery = regions.flatMap((r) => [
+    ...(r.soon ? [] : r.stores.map((name) => ({ name, region: r.name, key: r.key, latin: true, soon: false }))),
+    ...(generic[r.key] ? [{ name: generic[r.key], region: r.name, key: r.key, latin: false, soon: r.soon }] : []),
+  ]);
+  const soonText = { badge: m.soon.badge, title: m.soon.title, text: m.soon.text };
+  const proof = [h.benefits.items[2], h.benefits.items[3], h.benefits.items[5]];
 
   return (
     <>
-      {/* ── Hero ── */}
-      <section className="overflow-hidden">
-        <Container className="grid items-center gap-14 pt-14 pb-20 lg:grid-cols-[1.1fr_0.9fr] lg:gap-10 lg:pt-24 lg:pb-28">
-          <div>
-            <Eyebrow>{h.hero.eyebrow}</Eyebrow>
-            <h1 className="mt-5 text-[2.75rem] leading-[1.02] font-semibold tracking-[-0.035em] sm:text-6xl lg:text-[4.5rem]">{h.hero.title}</h1>
-            <p className="mt-6 max-w-lg text-lg leading-relaxed text-ink-soft">{h.hero.subtitle}</p>
+      {/* ── A · Hero: the world connects to Baku ── */}
+      <Hero
+        text={h.hero}
+        regions={regions.map((r) => ({ key: r.key, name: r.name, stores: r.soon ? [] : r.stores, other: r.otherStores, soon: r.soon }))}
+        storeNames={gallery.map((g) => ({ name: g.name, latin: g.latin }))}
+        baku={h.routes.baku}
+        brand={brand.name}
+        statement={h.hero.title}
+        orderLabel={h.routes.order}
+        soon={soonText}
+      />
 
-            <div className="mt-9">
-              <HeroQuickStart />
-            </div>
-
-            <div className="mt-9 flex flex-wrap items-center gap-3">
-              <ButtonLink href="/order" size="lg">
-                {h.hero.cta}
-              </ButtonLink>
-              <ButtonLink href="/how-it-works" variant="ghost" size="lg">
-                {h.hero.cta2}
-                <ArrowRight className="size-4" aria-hidden />
-              </ButtonLink>
-            </div>
-            <p className="mt-6 max-w-md text-[13px] text-muted">{h.hero.note}</p>
+      {/* ── B · Marketplaces: an index you can read from across the room ── */}
+      <section className="relative overflow-hidden">
+        <div className="border-y border-line py-5" aria-hidden>
+          <div className="marquee flex w-max gap-12 pr-12 text-[12px] font-medium tracking-[0.24em] whitespace-nowrap text-muted uppercase">
+            {[...gallery, ...gallery, ...gallery, ...gallery].map((g, i) => (
+              <span key={i} lang={g.latin ? 'en' : undefined} className={g.soon ? 'flex items-center gap-12 text-muted/50' : 'flex items-center gap-12'}>
+                {g.name}
+                {g.soon && <span className="-ml-9 text-accent/70">· {m.soon.badge}</span>}
+                <span className="size-1 rounded-full bg-accent" />
+              </span>
+            ))}
           </div>
-
-          {/* Product UI as the hero visual: an example quotation, clearly labelled. */}
-          {example && (
-            <Reveal className="relative mx-auto w-full max-w-md lg:mr-0">
-              <div className="absolute -inset-x-6 -top-6 -bottom-6 -z-10 rounded-[2rem] bg-accent-soft/70" aria-hidden />
-              <Card className="p-6 shadow-float sm:p-7">
-                <div className="mb-4 flex items-center justify-between">
-                  <p className="font-display text-lg font-semibold">{h.hero.cardTitle}</p>
-                  <Badge>{m.common.example}</Badge>
-                </div>
-                <Breakdown lines={example.lines} total={example.total} />
-                <p className="mt-5 text-[12px] text-muted">{h.hero.cardNote}</p>
-              </Card>
-            </Reveal>
-          )}
-        </Container>
-      </section>
-
-      {/* ── Marketplaces ── */}
-      <section className="border-y border-line bg-surface">
-        <Container className="py-16 lg:py-20">
-          <div className="grid gap-10 lg:grid-cols-[1fr_1.2fr] lg:items-end">
-            <div>
-              <h2 className="text-3xl font-semibold sm:text-4xl">{h.markets.title}</h2>
-              <p className="mt-4 max-w-md text-ink-soft">{h.markets.subtitle}</p>
-            </div>
-            <ul className="grid grid-cols-2 gap-px overflow-hidden rounded-card border border-line bg-line sm:grid-cols-3">
-              {[...marketplaces.filter((x) => x.enabled).map((x) => x.name), ...h.markets.intl].map((name, i) => (
-                <li key={name} className="flex min-h-20 items-center bg-surface px-5 py-4">
-                  <span className={i < marketplaces.filter((x) => x.enabled).length ? 'font-display text-xl font-semibold tracking-tight' : 'text-sm text-ink-soft'}>{name}</span>
+        </div>
+        <Container className="py-20 lg:py-32">
+          <div className="grid gap-6 lg:grid-cols-[1fr_1fr] lg:items-end">
+            <h2 className="display text-[clamp(2.2rem,5.4vw,4.75rem)]">{h.markets.title}</h2>
+            <p className="max-w-md text-lg leading-relaxed text-ink-soft lg:justify-self-end">{h.markets.subtitle}</p>
+          </div>
+          <ul className="mt-14 border-t border-line">
+            {gallery.map((g, i) =>
+              g.soon ? (
+                <li key={`${g.key}-${g.name}`}>
+                  <div
+                    className="group relative flex items-baseline justify-between gap-6 border-b border-line py-5 sm:py-7"
+                    title={fmt(m.soon.text, { region: g.region })}
+                  >
+                    <span className="relative flex items-baseline gap-5 sm:gap-8">
+                      <span className="tabular hidden text-[12px] tracking-[0.2em] text-muted/60 sm:block">{String(i + 1).padStart(2, '0')}</span>
+                      <span className="display text-[clamp(2rem,7.2vw,6.25rem)] text-transparent [-webkit-text-stroke:1px_var(--color-line-strong)] transition-colors duration-500 group-hover:[-webkit-text-stroke-color:var(--color-muted)]">
+                        {g.name}
+                      </span>
+                    </span>
+                    <span className="relative flex shrink-0 flex-col items-end gap-2 text-right">
+                      <span className="inline-flex h-7 items-center gap-1.5 rounded-full border border-dashed border-accent/60 px-3 text-[11px] font-semibold tracking-[0.18em] text-accent uppercase">
+                        <Clock className="size-3" aria-hidden />
+                        {m.soon.badge}
+                      </span>
+                      <span className="text-[12px] font-medium tracking-[0.18em] text-muted uppercase">{g.region}</span>
+                      <span className="max-h-0 max-w-56 overflow-hidden text-[12px] leading-snug text-muted opacity-0 transition-all duration-500 group-hover:max-h-20 group-hover:opacity-100">{m.soon.short}</span>
+                    </span>
+                  </div>
                 </li>
-              ))}
-            </ul>
-          </div>
+              ) : (
+              <li key={`${g.key}-${g.name}`}>
+                <Link
+                  href={`/order?region=${g.key}`}
+                  className="group relative flex items-baseline justify-between gap-6 overflow-hidden border-b border-line py-5 transition-[padding] duration-500 ease-out hover:px-4 sm:py-7 lg:hover:px-8"
+                >
+                  <span className="absolute inset-0 origin-bottom scale-y-0 bg-accent transition-transform duration-500 ease-out group-hover:scale-y-100" aria-hidden />
+                  <span className="relative flex items-baseline gap-5 sm:gap-8">
+                    <span className="tabular hidden text-[12px] tracking-[0.2em] text-muted transition-colors duration-300 group-hover:text-on-accent/70 sm:block">{String(i + 1).padStart(2, '0')}</span>
+                    <span lang={g.latin ? 'en' : undefined} className="display text-[clamp(2rem,7.2vw,6.25rem)] transition-colors duration-300 group-hover:text-on-accent">{g.name}</span>
+                  </span>
+                  <span className="relative flex shrink-0 items-center gap-3 text-[12px] font-medium tracking-[0.18em] text-muted uppercase transition-colors duration-300 group-hover:text-on-accent">
+                    {g.region}
+                    <ArrowUpRight className="size-5 -translate-x-2 opacity-0 transition-[transform,opacity] duration-500 group-hover:translate-x-0 group-hover:opacity-100" aria-hidden />
+                  </span>
+                </Link>
+              </li>
+              ),
+            )}
+          </ul>
           <p className="mt-6 text-[13px] text-muted">{h.markets.manual}</p>
         </Container>
       </section>
 
-      {/* ── How it works ── */}
-      <section>
-        <Container className="py-20 lg:py-28">
-          <div className="mb-10 flex flex-wrap items-end justify-between gap-4">
-            <div>
-              <h2 className="text-3xl font-semibold sm:text-4xl">{h.how.title}</h2>
-              <p className="mt-3 text-ink-soft">{h.how.subtitle}</p>
-            </div>
-            <Link href="/how-it-works" className="inline-flex items-center gap-1.5 text-sm font-medium underline-offset-4 hover:underline">
-              {m.nav.how}
-              <ArrowUpRight className="size-4" aria-hidden />
-            </Link>
+      {/* ── Combine stores, save on delivery ── */}
+      <CombineSavings catalog={catalog} m={m} locale={locale} />
+
+      {/* ── C · How it works: a horizontal journey ── */}
+      <ProcessRail eyebrow={h.how.title} title={h.hero.processTitle} steps={m.steps} />
+
+      {/* ── D · Global connection: every route at once ── */}
+      <section className="border-t border-line">
+        <Container className="py-20 lg:py-32">
+          <div className="grid gap-6 lg:grid-cols-[1fr_1fr] lg:items-end">
+            <h2 className="display text-[clamp(2.2rem,5.4vw,4.75rem)]">{h.routes.title}</h2>
+            <p className="max-w-md text-lg leading-relaxed text-ink-soft lg:justify-self-end">{h.routes.subtitle}</p>
           </div>
-          <Reveal>
-            <Steps steps={m.steps} />
+          <Reveal className="mt-12">
+            <WorldMap regions={regions} labels={h.routes} soon={soonText} usdRate={catalog.rates.find((r) => r.currency === 'USD')?.rateToAzn} />
           </Reveal>
         </Container>
       </section>
 
-      {/* ── Pricing explanation ── */}
-      <section className="bg-ink text-white">
-        <Container className="grid gap-12 py-20 lg:grid-cols-2 lg:items-center lg:py-28">
+      {/* ── E · Product request ── */}
+      <section className="relative overflow-hidden border-t border-line">
+        <div className="pointer-events-none absolute -top-40 left-1/2 size-[46rem] -translate-x-1/2 rounded-full bg-[radial-gradient(closest-side,rgb(255_90_31/0.13),transparent)]" aria-hidden />
+        <Container className="relative grid gap-12 py-20 lg:grid-cols-[0.9fr_1.1fr] lg:items-center lg:gap-16 lg:py-32">
           <div>
-            <h2 className="text-3xl font-semibold sm:text-4xl">{h.pricing.title}</h2>
-            <p className="mt-4 max-w-md text-white/70">{h.pricing.subtitle}</p>
-            <ul className="mt-8 space-y-3 text-[15px]">
-              {(['product', 'domestic', 'international', 'service', 'customs'] as const).map((k, i) => (
-                <li key={k} className="flex items-center gap-3">
-                  <span className="tabular flex size-6 items-center justify-center rounded-full border border-white/25 text-[11px] text-white/70">{i === 0 ? '' : '+'}</span>
-                  {m.pricingPage.lines[k]}
+            <h2 className="display text-[clamp(2.2rem,5vw,4.5rem)]">{h.hero.quickTitle}</h2>
+            <p className="mt-6 max-w-md text-lg leading-relaxed text-ink-soft">{h.hero.note}</p>
+            <ol className="mt-10 space-y-4">
+              {m.order.sideItems.map((item, i) => (
+                <li key={item} className="grid grid-cols-[2.5rem_1fr] gap-2 text-sm leading-relaxed text-ink-soft">
+                  <span className="tabular pt-0.5 text-[12px] tracking-[0.18em] text-accent">0{i + 1}</span>
+                  {item}
                 </li>
               ))}
-              <li className="flex items-center gap-3 border-t border-white/15 pt-4 font-medium">
-                <span className="flex size-6 items-center justify-center rounded-full bg-white text-[11px] text-ink">=</span>
-                {m.pricingPage.lines.total}
-              </li>
-            </ul>
-            <ButtonLink href="/pricing" variant="secondary" className="mt-9 border-white/0">
-              {h.pricing.link}
-              <ArrowRight className="size-4" aria-hidden />
-            </ButtonLink>
+            </ol>
           </div>
-          <div className="grid gap-px overflow-hidden rounded-card border border-white/15 bg-white/15 sm:grid-cols-2">
-            {(['estimate', 'quote', 'paid', 'extra'] as const).map((k) => (
-              <div key={k} className="bg-ink p-6">
-                <p className="font-medium">{m.pricingPage.terms[k].t}</p>
-                <p className="mt-2 text-sm leading-relaxed text-white/60">{m.pricingPage.terms[k].d}</p>
+          <Reveal>
+            <RequestConsole regions={regions.map((r) => ({ key: r.key, name: r.name, soon: r.soon }))} />
+          </Reveal>
+        </Container>
+      </section>
+
+      {/* ── F · Trust and transparency: the quotation, line by line ── */}
+      <section className="border-t border-line">
+        <Container className="py-20 lg:py-32">
+          <div className="grid gap-14 lg:grid-cols-[1fr_1fr] lg:gap-20">
+            <div className="lg:sticky lg:top-28 lg:self-start">
+              <h2 className="display text-[clamp(2.2rem,5vw,4.5rem)]">{h.hero.trustTitle}</h2>
+              <p className="mt-6 max-w-md text-lg leading-relaxed text-ink-soft">{h.pricing.subtitle}</p>
+              <ButtonLink href="/pricing" variant="secondary" size="lg" className="group mt-9">
+                {h.pricing.link}
+                <ArrowRight className="size-4 transition-transform duration-300 group-hover:translate-x-1" aria-hidden />
+              </ButtonLink>
+            </div>
+
+            <div className="space-y-5">
+              {example && (
+                <Reveal className="rounded-card border border-line bg-surface p-6 sm:p-8">
+                  <div className="mb-5 flex items-center justify-between">
+                    <p className="font-display text-lg font-semibold">{h.hero.cardTitle}</p>
+                    <Badge>{m.common.example}</Badge>
+                  </div>
+                  <Breakdown lines={example.lines} total={example.total} />
+                  <p className="mt-5 text-[12px] text-muted">{h.hero.cardNote}</p>
+                </Reveal>
+              )}
+              <div className="grid gap-px overflow-hidden rounded-card border border-line bg-line sm:grid-cols-2">
+                {(['estimate', 'quote', 'paid', 'extra'] as const).map((k) => (
+                  <div key={k} className="bg-surface p-6">
+                    <p className="font-medium">{m.pricingPage.terms[k].t}</p>
+                    <p className="mt-2 text-sm leading-relaxed text-muted">{m.pricingPage.terms[k].d}</p>
+                  </div>
+                ))}
               </div>
+            </div>
+          </div>
+
+          <div className="mt-20 grid gap-x-12 gap-y-10 border-t border-line pt-12 md:grid-cols-3">
+            {proof.map((b, i) => (
+              <Reveal key={b.title} delay={i * 0.08}>
+                <span className="tabular text-[12px] tracking-[0.2em] text-accent">0{i + 1}</span>
+                <h3 className="display mt-4 text-2xl sm:text-3xl">{b.title}</h3>
+                <p className="mt-3 max-w-xs text-sm leading-relaxed text-ink-soft">{b.text}</p>
+              </Reveal>
             ))}
           </div>
         </Container>
       </section>
 
-      {/* ── Benefits ── */}
-      <section>
-        <Container className="py-20 lg:py-28">
-          <div className="max-w-xl">
-            <h2 className="text-3xl font-semibold sm:text-4xl">{h.benefits.title}</h2>
-            <p className="mt-3 text-ink-soft">{h.benefits.subtitle}</p>
-          </div>
-          <div className="mt-12 grid gap-x-10 gap-y-10 sm:grid-cols-2 lg:grid-cols-3">
-            {h.benefits.items.map((b, i) => {
-              const Icon = benefitIcons[i % benefitIcons.length];
-              return (
-                <Reveal key={b.title} delay={(i % 3) * 0.06}>
-                  <div className="border-t border-line-strong pt-6">
-                    <Icon className="size-5 text-accent" strokeWidth={1.75} aria-hidden />
-                    <h3 className="mt-4 text-lg font-semibold">{b.title}</h3>
-                    <p className="mt-2 text-sm leading-relaxed text-muted">{b.text}</p>
-                  </div>
-                </Reveal>
-              );
-            })}
-          </div>
-        </Container>
-      </section>
-
-      {/* ── Testimonials (demo content, labelled) ── */}
-      <section className="border-y border-line bg-surface">
+      {/* ── Sample testimonials (demo content, labelled) ── */}
+      <section className="border-t border-line">
         <Container className="py-20 lg:py-24">
           <div className="flex flex-wrap items-center gap-3">
-            <h2 className="text-3xl font-semibold sm:text-4xl">{h.testimonials.title}</h2>
+            <h2 className="text-2xl font-semibold sm:text-3xl">{h.testimonials.title}</h2>
             <Badge tone="warn">{m.common.demo}</Badge>
           </div>
           <p className="mt-3 text-sm text-muted">{h.testimonials.demoNotice}</p>
@@ -179,15 +235,15 @@ export default async function HomePage() {
       </section>
 
       {/* ── FAQ ── */}
-      <section>
+      <section className="border-t border-line">
         <Container className="grid gap-10 py-20 lg:grid-cols-[0.8fr_1.2fr] lg:py-28">
-          <h2 className="text-3xl font-semibold sm:text-4xl">{h.faq.title}</h2>
+          <h2 className="display text-[clamp(2rem,4vw,3.5rem)]">{h.faq.title}</h2>
           <div className="divide-y divide-line border-y border-line">
             {h.faq.items.map((f) => (
               <details key={f.q} className="group">
-                <summary className="flex items-center justify-between gap-6 py-5 font-medium">
+                <summary className="flex items-center justify-between gap-6 py-5 text-lg font-medium transition-colors hover:text-accent">
                   {f.q}
-                  <Plus className="size-4 shrink-0 text-muted transition-transform duration-200 group-open:rotate-45" aria-hidden />
+                  <Plus className="size-5 shrink-0 text-muted transition-transform duration-300 group-open:rotate-45 group-open:text-accent" aria-hidden />
                 </summary>
                 <p className="max-w-2xl pb-6 text-[15px] leading-relaxed text-ink-soft">{f.a}</p>
               </details>
@@ -196,19 +252,23 @@ export default async function HomePage() {
         </Container>
       </section>
 
-      {/* ── Closing CTA ── */}
-      <section>
-        <Container>
-          <div className="flex flex-col items-start justify-between gap-8 rounded-[1.75rem] bg-accent px-7 py-12 text-white sm:px-12 lg:flex-row lg:items-center lg:py-14">
-            <div>
-              <h2 className="text-3xl font-semibold sm:text-4xl">{h.cta.title}</h2>
-              <p className="mt-3 text-white/75">{h.cta.text}</p>
-            </div>
-            <ButtonLink href="/order" variant="secondary" size="lg" className="border-white/0">
-              {h.cta.button}
-              <ArrowRight className="size-4" aria-hidden />
-            </ButtonLink>
-          </div>
+      {/* ── G · Final call ── */}
+      <section className="relative overflow-hidden border-t border-line">
+        {/* A planet horizon: the same world as the hero, seen from Baku. */}
+        <div className="pointer-events-none absolute inset-x-0 top-[62%] mx-auto aspect-square w-[150vw] max-w-none -translate-x-[calc((150vw-100%)/2)] rounded-full border-t border-white/15 bg-[radial-gradient(closest-side,transparent_82%,rgb(255_90_31/0.16))] shadow-[0_-40px_120px_-30px_rgb(255_90_31/0.35)]" aria-hidden />
+        <Container className="relative py-28 text-center lg:py-44">
+          <h2 className="display text-[clamp(3rem,11vw,10rem)]">
+            {h.hero.finalHeadline.map((line, i) => (
+              <span key={line} className={i === 1 ? 'block text-accent' : 'block'}>
+                {line}
+              </span>
+            ))}
+          </h2>
+          <p className="mx-auto mt-8 max-w-md text-lg text-ink-soft">{h.cta.text}</p>
+          <ButtonLink href="/order" variant="accent" size="lg" className="group mt-10 h-15 px-9 text-base transition-[background-color,transform,box-shadow] duration-300 hover:-translate-y-0.5 hover:shadow-[0_18px_50px_-14px_rgb(255_90_31/0.7)]">
+            {h.hero.finalCta}
+            <ArrowRight className="size-4 transition-transform duration-300 group-hover:translate-x-1" aria-hidden />
+          </ButtonLink>
         </Container>
       </section>
     </>

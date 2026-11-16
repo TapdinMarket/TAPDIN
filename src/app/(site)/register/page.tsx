@@ -35,6 +35,10 @@ export default async function RegisterPage({ searchParams }: { searchParams: Pro
           <Field label={m.auth.password} hint={m.auth.passwordHint}>
             <Input name="password" type="password" autoComplete="new-password" required minLength={8} />
           </Field>
+          <label className="flex cursor-pointer items-start gap-3 text-sm leading-relaxed text-ink-soft">
+            <input type="checkbox" name="notifyWhatsApp" className="mt-1 size-4 shrink-0 accent-[var(--color-accent)]" />
+            {m.notify.registerOptIn}
+          </label>
           <SubmitButton size="lg" className="mt-2 w-full">
             {m.auth.registerButton}
           </SubmitButton>

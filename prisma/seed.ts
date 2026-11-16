@@ -5,7 +5,7 @@
 import { PrismaClient } from '@prisma/client';
 import bcrypt from 'bcryptjs';
 import { readFileSync } from 'node:fs';
-import { calculateQuote } from '../src/lib/pricing/engine';
+import { calculateOrderQuote } from '../src/lib/pricing/engine';
 
 // Minimal .env loader so the seed works when started directly through tsx.
 try {
@@ -25,7 +25,7 @@ const statuses = [
   ['awaiting_approval', 'Təsdiqinizi gözləyir', 'Ожидает подтверждения клиента', 'Awaiting customer approval', true, true],
   ['awaiting_payment', 'Ödəniş gözlənilir', 'Ожидает оплаты', 'Awaiting payment', true, true],
   ['purchase_confirmed', 'Alış təsdiqləndi', 'Покупка подтверждена', 'Purchase confirmed', true, true],
-  ['origin_warehouse', 'Çin anbarına çatdı', 'Прибыл на склад в Китае', 'Arrived at China warehouse', false, true],
+  ['origin_warehouse', 'Mənbə ölkədəki anbara çatdı', 'Прибыл на склад в стране покупки', 'Arrived at origin warehouse', false, true],
   ['quality_inspection', 'Keyfiyyət yoxlaması', 'Проверка качества', 'Quality inspection', false, true],
   ['ready_to_ship', 'Beynəlxalq göndərişə hazırdır', 'Готов к международной отправке', 'Ready for international shipment', false, true],
   ['in_transit', 'Yoldadır', 'В пути', 'In transit', false, true],
@@ -34,29 +34,47 @@ const statuses = [
   ['ready_for_pickup', 'Təhvil / çatdırılmaya hazırdır', 'Готов к выдаче / доставке', 'Ready for pickup / delivery', false, true],
   ['completed', 'Tamamlandı', 'Завершён', 'Completed', true, true],
   ['cancelled', 'Ləğv edildi', 'Отменён', 'Cancelled', true, false],
+  // Delays: shown to the customer as a notice (and notified), not as a step of the timeline.
+  ['cargo_delayed', 'Karqoda gecikmə', 'Задержка у карго', 'Delayed by the carrier', false, false],
+  ['customs_hold', 'Gömrükdə gecikmə', 'Задержка на таможне', 'Held at customs', false, false],
+  ['lost', 'Bağlama itib — araşdırırıq', 'Посылка утеряна — разбираемся', 'Parcel lost — investigating', false, false],
 ] as const;
 
 const regions = [
   { key: 'CN', name: 'Çin', defaultCurrency: 'CNY', commissionPercent: 15, minCommissionAzn: 5, cargoPerKgUsd: 6, minBillableWeightKg: 0.5 },
-  { key: 'US', name: 'ABŞ', defaultCurrency: 'USD', commissionPercent: 15, minCommissionAzn: 8, cargoPerKgUsd: 9, minBillableWeightKg: 0.5 },
-  { key: 'EU', name: 'Avropa', defaultCurrency: 'EUR', commissionPercent: 15, minCommissionAzn: 8, cargoPerKgUsd: 8, minBillableWeightKg: 0.5 },
+  // Russia: placeholder rates like the others — verify cargo cost and customs rules before going live.
+  { key: 'RU', name: 'Rusiya', defaultCurrency: 'RUB', commissionPercent: 15, minCommissionAzn: 5, cargoPerKgUsd: 4, minBillableWeightKg: 0.5 },
+  // USA and Europe are announced (COMING_SOON): visible on the site, closed for orders.
+  { key: 'US', name: 'ABŞ', status: 'COMING_SOON' as const, defaultCurrency: 'USD', commissionPercent: 15, minCommissionAzn: 8, cargoPerKgUsd: 9, minBillableWeightKg: 0.5 },
+  { key: 'EU', name: 'Avropa', status: 'COMING_SOON' as const, defaultCurrency: 'EUR', commissionPercent: 15, minCommissionAzn: 8, cargoPerKgUsd: 8, minBillableWeightKg: 0.5 },
 ];
 
 const marketplaces = [
   { key: '1688', name: '1688', regionKey: 'CN', hostPatterns: ['1688.com'] },
   { key: 'taobao', name: 'Taobao', regionKey: 'CN', hostPatterns: ['taobao.com', 'tmall.com', 'tb.cn'] },
   { key: 'pinduoduo', name: 'Pinduoduo', regionKey: 'CN', hostPatterns: ['pinduoduo.com', 'yangkeduo.com'] },
+  { key: 'temu', name: 'Temu', regionKey: 'CN', hostPatterns: ['temu.com'] },
+  { key: 'ozon', name: 'Ozon', regionKey: 'RU', hostPatterns: ['ozon.ru'] },
+  { key: 'wildberries', name: 'Wildberries', regionKey: 'RU', hostPatterns: ['wildberries.ru', 'wb.ru'] },
+  // US / EU stores (regions COMING_SOON): recognising them lets the order form say "coming soon" instead of failing later.
+  { key: 'amazon_us', name: 'Amazon', regionKey: 'US', hostPatterns: ['amazon.com'] },
+  { key: 'ebay', name: 'eBay', regionKey: 'US', hostPatterns: ['ebay.com'] },
+  { key: 'walmart', name: 'Walmart', regionKey: 'US', hostPatterns: ['walmart.com'] },
+  { key: 'bestbuy', name: 'Best Buy', regionKey: 'US', hostPatterns: ['bestbuy.com'] },
+  { key: 'amazon_eu', name: 'Amazon EU', regionKey: 'EU', hostPatterns: ['amazon.de', 'amazon.fr', 'amazon.it', 'amazon.es', 'amazon.nl', 'amazon.pl', 'amazon.se'] },
+  { key: 'zalando', name: 'Zalando', regionKey: 'EU', hostPatterns: ['zalando.de', 'zalando.fr', 'zalando.it', 'zalando.es', 'zalando.nl', 'zalando.pl', 'zalando.at', 'zalando.be'] },
+  { key: 'otto', name: 'OTTO', regionKey: 'EU', hostPatterns: ['otto.de'] },
 ];
 
 // Demo defaults only — the admin must maintain real rates in Settings.
-const rates = { USD: 1.7, EUR: 1.85, CNY: 0.235, GBP: 2.15 };
+const rates = { USD: 1.7, EUR: 1.85, CNY: 0.235, GBP: 2.15, RUB: 0.021 };
 
 async function seedReference() {
   for (const [i, s] of statuses.entries()) {
     const [key, labelAz, labelRu, labelEn, isSystem, showOnTimeline] = s;
     await db.orderStatus.upsert({
       where: { key },
-      create: { key, labelAz, labelRu, labelEn, sortOrder: (i + 1) * 10, isSystem, showOnTimeline },
+      create: { key, labelAz, labelRu, labelEn, sortOrder: ({ cargo_delayed: 95, customs_hold: 105, lost: 106 } as Record<string, number>)[key] ?? (i + 1) * 10, isSystem, showOnTimeline },
       update: {},
     });
   }
@@ -74,13 +92,20 @@ async function seedReference() {
   for (const [i, m] of marketplaces.entries()) {
     await db.marketplace.upsert({ where: { key: m.key }, create: { ...m, sortOrder: i }, update: {} });
   }
+  // One-off upgrades for databases seeded before Russia was added. Only untouched defaults are changed.
+  await db.orderStatus.updateMany({
+    where: { key: 'origin_warehouse', labelEn: 'Arrived at China warehouse' },
+    data: { labelAz: 'Mənbə ölkədəki anbara çatdı', labelRu: 'Прибыл на склад в стране покупки', labelEn: 'Arrived at origin warehouse' },
+  });
+  await db.region.updateMany({ where: { key: 'EU', sortOrder: 2 }, data: { sortOrder: 3 } });
+  await db.region.updateMany({ where: { key: 'US', sortOrder: 1 }, data: { sortOrder: 2 } });
   for (const [currency, rateToAzn] of Object.entries(rates)) {
     await db.exchangeRate.upsert({ where: { currency }, create: { currency, rateToAzn }, update: {} });
   }
 }
 
 async function seedUsers() {
-  const adminEmail = (process.env.SEED_ADMIN_EMAIL ?? 'admin@tapdiq.az').toLowerCase();
+  const adminEmail = (process.env.SEED_ADMIN_EMAIL ?? 'admin@tapdin.az').toLowerCase();
   const adminPassword = process.env.SEED_ADMIN_PASSWORD;
   const customerEmail = (process.env.SEED_CUSTOMER_EMAIL ?? 'leyla@example.com').toLowerCase();
   const customerPassword = process.env.SEED_CUSTOMER_PASSWORD;
@@ -110,13 +135,13 @@ type Demo = {
   customer: number;
   monthsAgo: number;
   market: string | null;
-  region: 'CN' | 'US' | 'EU';
+  region: 'CN' | 'RU' | 'US' | 'EU';
   url: string | null;
   title: string;
   sizeColor?: string;
   qty: number;
   status: string;
-  quote?: { currency: 'CNY' | 'USD' | 'EUR'; unit: number; domestic: number; weight: number; state: 'SENT' | 'ACCEPTED' | 'REJECTED' };
+  quote?: { currency: 'CNY' | 'RUB' | 'USD' | 'EUR'; unit: number; domestic: number; weight: number; state: 'SENT' | 'ACCEPTED' | 'REJECTED' };
   paid?: boolean;
   tracking?: boolean;
 };
@@ -134,6 +159,8 @@ const demoOrders: Demo[] = [
   { customer: 0, monthsAgo: 0, market: 'taobao', region: 'CN', url: 'https://item.taobao.com/item.htm?id=000000000010', title: 'Yun palto, oversize', sizeColor: 'M, bej', qty: 1, status: 'quality_inspection', quote: { currency: 'CNY', unit: 520, domestic: 0, weight: 1.5, state: 'ACCEPTED' }, paid: true },
   { customer: 0, monthsAgo: 0, market: '1688', region: 'CN', url: 'https://detail.1688.com/offer/000000000011.html', title: 'Qəhvə dəyirmanı, əl ilə', qty: 1, status: 'awaiting_approval', quote: { currency: 'CNY', unit: 178, domestic: 9, weight: 0.9, state: 'SENT' } },
   { customer: 1, monthsAgo: 0, market: 'pinduoduo', region: 'CN', url: 'https://mobile.yangkeduo.com/goods.html?goods_id=000000000012', title: 'Simsiz tozsoran üçün filtr dəsti', qty: 4, status: 'awaiting_payment', quote: { currency: 'CNY', unit: 32, domestic: 6, weight: 0.6, state: 'ACCEPTED' } },
+  { customer: 1, monthsAgo: 2, market: 'ozon', region: 'RU', url: 'https://www.ozon.ru/product/000000000015/', title: 'Emallı çuqun qazan 4 L', qty: 1, status: 'completed', quote: { currency: 'RUB', unit: 4200, domestic: 0, weight: 4.1, state: 'ACCEPTED' }, paid: true, tracking: true },
+  { customer: 2, monthsAgo: 0, market: 'wildberries', region: 'RU', url: 'https://www.wildberries.ru/catalog/000000016/detail.aspx', title: 'Qış gödəkçəsi, uşaq üçün', sizeColor: '128, göy', qty: 1, status: 'purchase_confirmed', quote: { currency: 'RUB', unit: 5600, domestic: 0, weight: 1.1, state: 'ACCEPTED' }, paid: true },
   { customer: 2, monthsAgo: 0, market: null, region: 'EU', url: 'https://example-design-store.eu/item/wall-clock', title: 'Divar saatı, skandinav dizayn', qty: 1, status: 'price_calculation' },
   { customer: 0, monthsAgo: 0, market: null, region: 'CN', url: null, title: 'Instagram-da gördüyüm dəri çanta (şəkil ilə sorğu)', qty: 1, status: 'request_received' },
 ];
@@ -152,29 +179,33 @@ async function seedDemoOrders(adminId: string, customerIds: string[]) {
     const order = await db.order.create({
       data: {
         userId: customerIds[d.customer],
-        method: d.url ? 'URL' : 'IMAGE',
-        sourceUrl: d.url,
-        sourceMarketplace: d.market,
         regionKey: d.region,
-        productTitle: d.url ? d.title : null,
-        productDescription: d.url ? null : d.title,
-        sizeColor: d.sizeColor,
-        quantity: d.qty,
         statusKey: d.status,
         createdAt,
         events: { create: { description: 'created', status: 'request_received', createdAt } },
+        items: {
+          create: {
+            method: d.url ? 'URL' : 'IMAGE',
+            sourceUrl: d.url,
+            sourceMarketplace: d.market,
+            title: d.url ? d.title : null,
+            description: d.url ? null : d.title,
+            sizeColor: d.sizeColor,
+            quantity: d.qty,
+            createdAt,
+          },
+        },
       },
+      include: { items: true },
     });
 
     if (d.quote) {
       const region = regionRows[d.region];
       const rate = rates[d.quote.currency];
       const cargo = Math.round(Math.max(d.quote.weight, Number(region.minBillableWeightKg)) * Number(region.cargoPerKgUsd) * rates.USD * 100) / 100;
+      const line = { unitPrice: d.quote.unit, quantity: d.qty, domesticShipping: d.quote.domestic, exchangeRate: rate };
       const input = {
-        unitPrice: d.quote.unit,
-        quantity: d.qty,
-        domesticShipping: d.quote.domestic,
-        exchangeRate: rate,
+        lines: [line],
         internationalShippingAzn: cargo,
         commissionPercent: Number(region.commissionPercent),
         commissionBasis: 'PRODUCT' as const,
@@ -183,22 +214,16 @@ async function seedDemoOrders(adminId: string, customerIds: string[]) {
         customsChargesAzn: 0,
         otherExpensesAzn: 0,
       };
-      const b = calculateQuote(input);
+      const b = calculateOrderQuote(input);
       const quotation = await db.quotation.create({
         data: {
           orderId: order.id,
           version: 1,
           status: d.quote.state,
-          currency: d.quote.currency,
-          exchangeRate: rate,
-          unitPrice: input.unitPrice,
-          quantity: d.qty,
-          domesticShipping: input.domesticShipping,
           weightKg: d.quote.weight,
           commissionPercent: input.commissionPercent,
           commissionBasis: 'PRODUCT',
           minCommissionAzn: input.minCommissionAzn,
-          productCost: b.productCost,
           productCostAzn: b.productCostAzn,
           domesticShippingAzn: b.domesticShippingAzn,
           internationalShippingAzn: b.internationalShippingAzn,
@@ -210,6 +235,19 @@ async function seedDemoOrders(adminId: string, customerIds: string[]) {
           createdAt: at(1),
           expiresAt: d.quote.state === 'SENT' ? new Date(Date.now() + 3 * 86_400_000) : at(4),
           decidedAt: d.quote.state === 'SENT' ? null : at(2),
+          lines: {
+            create: {
+              itemId: order.items[0].id,
+              currency: d.quote.currency,
+              exchangeRate: rate,
+              unitPrice: line.unitPrice,
+              quantity: line.quantity,
+              domesticShipping: line.domesticShipping,
+              productCost: b.lines[0].productCost,
+              productCostAzn: b.lines[0].productCostAzn,
+              domesticShippingAzn: b.lines[0].domesticShippingAzn,
+            },
+          },
         },
       });
       await db.orderEvent.create({ data: { orderId: order.id, description: 'quote_sent', actorId: adminId, createdAt: at(1) } });
@@ -253,6 +291,28 @@ async function seedDemoOrders(adminId: string, customerIds: string[]) {
       });
     }
   }
+
+  await db.order.create({
+    data: {
+      userId: customerIds[1],
+      regionKey: 'CN',
+      statusKey: 'price_calculation',
+      instructions: 'Hamısını bir bağlamada göndərin.',
+      events: {
+        create: [
+          { description: 'created', status: 'request_received' },
+          { description: 'status_changed', status: 'price_calculation', actorId: adminId },
+        ],
+      },
+      items: {
+        create: [
+          { position: 0, method: 'URL', sourceUrl: 'https://item.taobao.com/item.htm?id=000000000020', sourceMarketplace: 'taobao', title: 'Kətan yataq dəsti, 2 nəfərlik', sizeColor: 'bej', quantity: 1, clientPrice: 189, clientCurrency: 'CNY' },
+          { position: 1, method: 'URL', sourceUrl: 'https://detail.1688.com/offer/000000000021.html', sourceMarketplace: '1688', title: 'Silikon mətbəx alətləri dəsti', quantity: 2, clientPrice: 35, clientCurrency: 'CNY' },
+          { position: 2, method: 'URL', sourceUrl: 'https://www.temu.com/goods-detail-g-000000000022.html', sourceMarketplace: 'temu', title: 'LED gecə lampası', quantity: 1, clientPrice: 6.99, clientCurrency: 'USD' },
+        ],
+      },
+    },
+  });
 
   await db.internalNote.create({
     data: {

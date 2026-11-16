@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import {
+  refreshRatesAction,
   deleteRateAction,
   saveContactAction,
   saveCustomsTextAction,
@@ -83,12 +84,19 @@ export default async function AdminSettingsPage() {
             <Field label={t.sourcingFee}>
               <Input name="sourcingFeeAzn" type="number" step="0.01" min="0" defaultValue={settings.general.sourcingFeeAzn} required />
             </Field>
+            <Field label={t.insurance} hint={t.insuranceHint}>
+              <Input name="insurancePercent" type="number" step="0.1" min="0" max="20" defaultValue={settings.general.insurancePercent} required />
+            </Field>
             <div className="sm:col-span-3"><SubmitButton size="sm">{m.common.save}</SubmitButton></div>
           </ActionForm>
         </Section>
 
         {/* ── Exchange rates ── */}
         <Section id="rates" title={t.rates} hint={t.ratesHint}>
+          <ActionForm action={refreshRatesAction} className="mb-5 flex flex-wrap items-center gap-3 rounded-control border border-accent/30 bg-accent-soft/40 px-4 py-3">
+            <SubmitButton size="sm" variant="accent">{t.cbar}</SubmitButton>
+            <span className="text-[12px] leading-relaxed text-ink-soft">{t.cbarHint}</span>
+          </ActionForm>
           <ul className="divide-y divide-line">
             {catalog.rates.map((r) => (
               <li key={r.currency} className="flex flex-wrap items-start gap-3 py-3 first:pt-0">
@@ -97,7 +105,10 @@ export default async function AdminSettingsPage() {
                   <input type="hidden" name="currency" value={r.currency} />
                   <Input name="rateToAzn" type="number" step="0.000001" min="0.000001" defaultValue={r.rateToAzn} className="w-36" aria-label={`${r.currency} ${t.rate}`} required />
                   <SubmitButton size="sm" variant="secondary">{m.common.save}</SubmitButton>
-                  <span className="tabular text-[12px] text-muted">{t.updated}: {formatDate(r.updatedAt, locale, true)}</span>
+                  <span className="tabular text-[12px] text-muted">
+                    <Badge tone={r.source === 'CBAR' ? 'accent' : 'neutral'} className="mr-2">{t.source[r.source as 'CBAR' | 'MANUAL'] ?? r.source}</Badge>
+                    {t.updated}: {formatDate(r.updatedAt, locale, true)}
+                  </span>
                 </ActionForm>
                 <ActionForm action={deleteRateAction} className="ml-auto">
                   <input type="hidden" name="currency" value={r.currency} />
@@ -121,6 +132,7 @@ export default async function AdminSettingsPage() {
                 <summary className="flex items-center justify-between px-4 py-3 text-sm font-medium">
                   <span>{r ? `${r.name} · ${r.key}` : `+ ${t.newRegion}`}</span>
                   {r && !r.enabled && <Badge>off</Badge>}
+                  {r && r.enabled && r.status === 'COMING_SOON' && <Badge tone="warn">{m.soon.badge}</Badge>}
                 </summary>
                 <ActionForm action={saveRegionAction} resetOnSuccess={!r} className="grid grid-cols-2 gap-4 border-t border-line p-4 sm:grid-cols-4 sm:items-end">
                   {r ? <input type="hidden" name="key" value={r.key} /> : (
@@ -130,6 +142,12 @@ export default async function AdminSettingsPage() {
                     </>
                   )}
                   <Field label={t.regionName}><Input name="name" defaultValue={r?.name} maxLength={60} required /></Field>
+                  <Field label={t.status}>
+                    <Select name="status" defaultValue={r?.status ?? 'ACTIVE'}>
+                      <option value="ACTIVE">{t.statusActive}</option>
+                      <option value="COMING_SOON">{t.statusSoon}</option>
+                    </Select>
+                  </Field>
                   <Field label={t.defaultCurrency}>
                     <Select name="defaultCurrency" defaultValue={r?.defaultCurrency ?? 'USD'}>
                       {currencies.map((c) => <option key={c}>{c}</option>)}

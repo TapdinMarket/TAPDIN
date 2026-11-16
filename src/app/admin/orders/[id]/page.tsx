@@ -1,6 +1,6 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
-import { ArrowLeft, ExternalLink } from 'lucide-react';
+import { ArrowLeft, MessageCircle } from 'lucide-react';
 import {
   addChargeAction,
   addNoteAction,
@@ -11,6 +11,8 @@ import {
   sendQuotationAction,
   setPaymentStatusAction,
   updateClassificationAction,
+  updateItemMarketplaceAction,
+  setItemAvailabilityAction,
   updateStatusAction,
   updateTrackingAction,
   waiveChargeAction,
@@ -20,13 +22,20 @@ import { Breakdown } from '@/components/breakdown';
 import { MediaUploader } from '@/components/media-uploader';
 import { EventList } from '@/components/order-view';
 import { QuoteForm } from '@/components/quote-form';
+import { OrderItems } from '@/components/order-items';
 import { Badge, Card, CardHeader, Field, Input, Row, Select, StatusBadge, Textarea } from '@/components/ui';
 import { statusLabel } from '@/i18n/config';
 import { getI18n } from '@/i18n/server';
 import { db } from '@/lib/db';
 import { fmt, formatAzn, formatDate } from '@/lib/format';
 import { computeFinancials, num, orderNo, STATUS, syncQuotationExpiry } from '@/lib/orders';
-import { quoteLines, toQuoteView } from '@/lib/quote-view';
+import { itemLabel, quoteLines, toQuoteView } from '@/lib/quote-view';
+import { isComingSoon } from '@/lib/regions';
+import { whatsappNumber } from '@/lib/notifications/messages';
+
+/** First line of a message staff send from their own WhatsApp, in the customer's language. */
+const staffGreeting = (locale: string, name: string, orderNo: string) =>
+  locale === 'ru' ? `Здравствуйте, ${name}! Пишем по заказу ${orderNo} в tapdın.` : locale === 'en' ? `Hello ${name}! We are writing about your tapdın order ${orderNo}.` : `Salam, ${name}! tapdın-dakı ${orderNo} sifarişiniz barədə yazırıq.`;
 import { getCatalog, getSettings } from '@/lib/settings';
 
 export default async function AdminOrderPage({ params }: { params: Promise<{ id: string }> }) {
@@ -41,13 +50,15 @@ export default async function AdminOrderPage({ params }: { params: Promise<{ id:
       include: {
         status: true,
         user: true,
+        items: { orderBy: { position: 'asc' } },
         media: { orderBy: { createdAt: 'asc' } },
-        quotations: { orderBy: { version: 'desc' } },
+        quotations: { orderBy: { version: 'desc' }, include: { lines: true } },
         payments: { orderBy: { createdAt: 'desc' } },
         charges: { orderBy: { createdAt: 'asc' } },
         tracking: { orderBy: { createdAt: 'asc' } },
         events: { orderBy: { createdAt: 'desc' } },
         notes: { orderBy: { createdAt: 'desc' }, include: { author: { select: { name: true } } } },
+        notifications: { orderBy: { createdAt: 'desc' }, take: 30 },
       },
     }),
     db.orderStatus.findMany({ orderBy: { sortOrder: 'asc' } }),
@@ -61,9 +72,12 @@ export default async function AdminOrderPage({ params }: { params: Promise<{ id:
   const accepted = quotes.find((q) => q.status === 'ACCEPTED');
   const f = computeFinancials(order);
   const region = catalog.regions.find((r) => r.key === order.regionKey) ?? null;
-  const rates = Object.fromEntries(catalog.rates.map((r) => [r.currency, r.rateToAzn]));
+  const rates: Record<string, number> = { AZN: 1, ...Object.fromEntries(catalog.rates.map((r) => [r.currency, r.rateToAzn])) };
+  const azn: Record<string, number> = rates;
   const closed = order.statusKey === STATUS.CANCELLED || order.statusKey === STATUS.COMPLETED;
-  const reference = order.media.filter((x) => x.kind === 'CUSTOMER_REFERENCE');
+  const paidOrReported = order.payments.some((p) => p.status === 'CONFIRMED' || p.status === 'PENDING');
+  const waitingDecision = order.items.filter((i) => i.unavailable && i.resolution === 'PENDING').length;
+  const itemName = (itemId: string, index: number) => `${index + 1}. ${itemLabel(order.items.find((x) => x.id === itemId) ?? { title: null, description: null }, m.dash.photoRequest)}`;
   const inspection = order.media.filter((x) => x.kind !== 'CUSTOMER_REFERENCE');
   const quoteTone = { SENT: 'warn', ACCEPTED: 'accent', REJECTED: 'danger', EXPIRED: 'neutral', SUPERSEDED: 'neutral' } as const;
   const payTone = { PENDING: 'warn', CONFIRMED: 'accent', FAILED: 'danger', REFUNDED: 'neutral' } as const;
@@ -84,40 +98,46 @@ export default async function AdminOrderPage({ params }: { params: Promise<{ id:
 
       <div className="mt-6 grid gap-6 xl:grid-cols-[1fr_21rem] xl:items-start">
         <div className="min-w-0 space-y-6">
-          {/* ── Request ── */}
+          {/* ── Items ── */}
           <Card>
-            <CardHeader title={t.request} />
-            <div className="p-5 sm:p-6">
-              <p className="text-lg font-medium break-words">{order.productTitle ?? order.productDescription}</p>
-              <dl className="mt-3 divide-y divide-line">
-                {order.sourceUrl && (
-                  <Row label={m.detail.link}>
-                    <a href={order.sourceUrl} target="_blank" rel="noopener noreferrer nofollow" className="inline-flex max-w-full items-center gap-1.5 font-medium break-all underline underline-offset-4">
-                      {new URL(order.sourceUrl).hostname}
-                      <ExternalLink className="size-3.5 shrink-0" aria-hidden />
-                    </a>
-                  </Row>
+            <CardHeader title={order.items.length > 1 ? fmt(m.dash.itemsCount, { n: order.items.length }) : t.request} />
+            <div className="space-y-4 p-5 sm:p-6">
+              <OrderItems
+                items={order.items}
+                media={order.media}
+                marketplaces={catalog.marketplaces}
+                rates={azn}
+                m={m}
+                locale={locale}
+                clientPriceLabel={m.detail.clientPriceStaff}
+                extra={(item) => (
+                  <div className="mt-3 flex flex-wrap items-end gap-2">
+                  {item.unavailable && item.resolution === 'PENDING' && <Badge tone="warn">{t.awaitingDecision}</Badge>}
+                  {!paidOrReported && item.resolution !== 'REPLACED' && (
+                    <ActionForm action={setItemAvailabilityAction}>
+                      <input type="hidden" name="itemId" value={item.id} />
+                      <input type="hidden" name="unavailable" value={item.unavailable ? 'false' : 'true'} />
+                      <SubmitButton size="sm" variant={item.unavailable ? 'secondary' : 'danger'}>{item.unavailable ? t.markAvailable : t.markUnavailable}</SubmitButton>
+                    </ActionForm>
+                  )}
+                  <ActionForm action={updateItemMarketplaceAction} className="flex flex-1 flex-wrap items-end gap-2">
+                    <input type="hidden" name="itemId" value={item.id} />
+                    <Field label={t.marketplace} className="min-w-48 flex-1">
+                      <Select name="marketplace" defaultValue={item.sourceMarketplace ?? ''}>
+                        <option value="">{m.detail.unknownSource}</option>
+                        {catalog.marketplaces.map((x) => <option key={x.key} value={x.key}>{x.name}</option>)}
+                      </Select>
+                    </Field>
+                    <SubmitButton size="sm" variant="secondary">{m.common.save}</SubmitButton>
+                  </ActionForm>
+                  </div>
                 )}
-                <Row label={m.detail.quantity}>{order.quantity}</Row>
-                {order.variant && <Row label={m.detail.variant}>{order.variant}</Row>}
-                {order.sizeColor && <Row label={m.detail.sizeColor}>{order.sizeColor}</Row>}
-                {order.productTitle && order.productDescription && <Row label={m.detail.description}><span className="whitespace-pre-line">{order.productDescription}</span></Row>}
-                {order.instructions && <Row label={m.detail.instructions}><span className="whitespace-pre-line">{order.instructions}</span></Row>}
-              </dl>
-              {reference.length > 0 && (
-                <>
-                  <p className="mt-5 mb-3 text-[13px] font-medium text-muted">{t.referenceImages}</p>
-                  <ul className="grid grid-cols-3 gap-3 sm:grid-cols-5">
-                    {reference.map((item) => (
-                      <li key={item.id} className="overflow-hidden rounded-control border border-line">
-                        <a href={`/api/media/${item.id}`} target="_blank" rel="noopener noreferrer">
-                          {/* eslint-disable-next-line @next/next/no-img-element */}
-                          <img src={`/api/media/${item.id}`} alt="" loading="lazy" className="aspect-square w-full object-cover" />
-                        </a>
-                      </li>
-                    ))}
-                  </ul>
-                </>
+              />
+              {!paidOrReported && <p className="text-[12px] leading-relaxed text-muted">{t.unavailableHint}</p>}
+              {order.instructions && (
+                <dl className="divide-y divide-line">
+                  <Row label={m.detail.instructions}><span className="whitespace-pre-line">{order.instructions}</span></Row>
+                </dl>
               )}
             </div>
           </Card>
@@ -141,9 +161,9 @@ export default async function AdminOrderPage({ params }: { params: Promise<{ id:
                         </span>
                       </summary>
                       <div className="border-t border-line p-4">
-                        <Breakdown lines={quoteLines(q, m, locale)} total={{ label: m.quote.total, value: formatAzn(q.totalAzn, locale) }} />
+                        <Breakdown lines={quoteLines(q, m, locale, itemName)} total={{ label: m.quote.total, value: formatAzn(q.totalAzn, locale) }} />
                         <p className="tabular mt-3 text-[12px] text-muted">
-                          {fmt(m.quote.rate, { cur: q.currency, rate: q.exchangeRate.toFixed(4) })} · {m.admin.quote.basisOptions[q.commissionBasis]}
+                          {[...new Map(q.lines.map((l) => [l.currency, l.exchangeRate])).entries()].map(([cur, rate]) => fmt(m.quote.rate, { cur, rate: rate.toFixed(4) })).join(' · ')} · {m.admin.quote.basisOptions[q.commissionBasis]}
                           {q.status === 'SENT' && ` · ${fmt(m.quote.validUntil, { date: formatDate(q.expiresAt, locale, true) })}`}
                         </p>
                         {q.noteToCustomer && <p className="mt-2 text-sm whitespace-pre-line text-ink-soft">{q.noteToCustomer}</p>}
@@ -152,18 +172,37 @@ export default async function AdminOrderPage({ params }: { params: Promise<{ id:
                   ))}
                 </div>
               )}
-              {!accepted && !closed && (
+              {!accepted && !closed && isComingSoon(region) && (
+                <p className="rounded-control border border-dashed border-line-strong px-4 py-3.5 text-sm leading-relaxed text-ink-soft">
+                  <Badge tone="warn" className="mr-2">{m.soon.badge}</Badge>
+                  {m.admin.quote.regionSoon}
+                </p>
+              )}
+              {!accepted && !closed && waitingDecision > 0 && (
+                <p className="rounded-control bg-warn-soft px-4 py-3 text-sm text-warn">{t.awaitingDecision}: {waitingDecision}</p>
+              )}
+              {!accepted && !closed && !isComingSoon(region) && order.items.every((i) => i.unavailable) && (
+                <p className="rounded-control bg-danger-soft px-4 py-3 text-sm text-danger">{m.admin.quote.noItems}</p>
+              )}
+              {!accepted && !closed && !isComingSoon(region) && order.items.some((i) => !i.unavailable) && (
                 <div>
                   <p className="mb-4 text-[15px] font-semibold">{m.admin.quote.new}</p>
                   <QuoteForm
                     action={sendQuotationAction}
                     orderId={order.id}
+                    rateInfo={Object.fromEntries(catalog.rates.map((r) => [r.currency, { source: r.source, updatedAt: r.updatedAt.toISOString() }]))}
+                    items={order.items.filter((item) => !item.unavailable).map((item, i) => ({
+                      id: item.id,
+                      label: itemLabel(item, `#${i + 1}`),
+                      quantity: item.quantity,
+                      clientPrice: item.clientPrice === null ? null : Number(item.clientPrice),
+                      clientCurrency: item.clientCurrency,
+                    }))}
                     rates={rates}
                     cargo={region ? { perKgUsd: region.cargoPerKgUsd, minWeightKg: region.minBillableWeightKg } : null}
                     customsNote={[region?.customsNote, settings.customs.note].filter(Boolean).join(' ')}
                     defaults={{
                       currency: defaultCurrency,
-                      quantity: order.quantity,
                       commissionPercent: region?.commissionPercent ?? 15,
                       commissionBasis: settings.general.commissionBasis,
                       minCommissionAzn: region?.minCommissionAzn ?? 0,
@@ -378,6 +417,17 @@ export default async function AdminOrderPage({ params }: { params: Promise<{ id:
               <p className="font-medium">{order.user.name}</p>
               <p className="mt-1 break-all text-muted">{order.user.email}</p>
               {order.user.phone && <p className="tabular text-muted">{order.user.phone}</p>}
+              {whatsappNumber(order.user.phone) && (
+                <a
+                  href={`https://wa.me/${whatsappNumber(order.user.phone)}?text=${encodeURIComponent(staffGreeting(order.user.locale, order.user.name, number))}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="mt-3 flex w-fit items-center gap-2 rounded-full border border-line-strong px-3.5 py-2 text-[13px] font-medium transition-colors hover:border-accent hover:text-accent"
+                >
+                  <MessageCircle className="size-4" aria-hidden />
+                  {t.whatsapp}
+                </a>
+              )}
               {order.user.role === 'CUSTOMER' && (
                 <Link href={`/admin/customers/${order.user.id}`} className="mt-3 inline-block font-medium underline underline-offset-4">{t.viewCustomer}</Link>
               )}
@@ -391,13 +441,7 @@ export default async function AdminOrderPage({ params }: { params: Promise<{ id:
               <Field label={t.region}>
                 <Select name="regionKey" defaultValue={order.regionKey ?? ''}>
                   <option value="">{t.none}</option>
-                  {catalog.regions.map((r) => <option key={r.key} value={r.key}>{r.name}</option>)}
-                </Select>
-              </Field>
-              <Field label={t.marketplace}>
-                <Select name="marketplace" defaultValue={order.sourceMarketplace ?? ''}>
-                  <option value="">{m.detail.unknownSource}</option>
-                  {catalog.marketplaces.map((x) => <option key={x.key} value={x.key}>{x.name}</option>)}
+                  {catalog.regions.map((r) => <option key={r.key} value={r.key}>{isComingSoon(r) ? fmt(m.order.regionSoonOption, { region: r.name }) : r.name}</option>)}
                 </Select>
               </Field>
               <Field label={t.type}>
@@ -426,6 +470,36 @@ export default async function AdminOrderPage({ params }: { params: Promise<{ id:
                       <p className="mt-1 text-[12px] text-muted">{n.author.name} · {formatDate(n.createdAt, locale, true)}</p>
                     </li>
                   ))}
+                </ul>
+              )}
+            </div>
+          </Card>
+
+          <Card>
+            <CardHeader title={m.notify.logTitle} />
+            <div className="px-5 py-3">
+              {order.notifications.length === 0 ? (
+                <p className="py-2 text-sm text-muted">{m.notify.logEmpty}</p>
+              ) : (
+                <ul className="divide-y divide-line text-[13px]">
+                  {order.notifications.map((n) => {
+                    const [event, statusKey] = n.event.split(':');
+                    const what = event === 'status_update' && statusKey ? statusLabel(statuses.find((s) => s.key === statusKey) ?? { labelAz: statusKey, labelRu: statusKey, labelEn: statusKey }, locale) : (m.notify.events as Record<string, string>)[event] ?? event;
+                    return (
+                      <li key={n.id} className="py-2.5" title={n.detail ?? undefined}>
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="font-medium">{what}</span>
+                          <Badge tone={n.status === 'SENT' ? 'accent' : n.status === 'FAILED' ? 'danger' : 'neutral'}>
+                            {n.channel === 'EMAIL' ? 'Email' : 'WhatsApp'} · {m.notify.status[n.status]}
+                          </Badge>
+                        </div>
+                        <p className="mt-1 text-[12px] text-muted">
+                          {formatDate(n.createdAt, locale, true)}
+                          {n.detail && <span className="block truncate">{n.detail}</span>}
+                        </p>
+                      </li>
+                    );
+                  })}
                 </ul>
               )}
             </div>

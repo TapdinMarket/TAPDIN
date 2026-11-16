@@ -41,7 +41,7 @@ type Tx = Prisma.TransactionClient;
 
 export const num = (d: Prisma.Decimal | number | null | undefined) => (d == null ? 0 : Number(d));
 
-export const orderNo = (n: number) => `TQ-${String(n).padStart(5, '0')}`;
+export const orderNo = (n: number) => `TD-${String(n).padStart(5, '0')}`;
 
 export async function addEvent(
   tx: Tx,

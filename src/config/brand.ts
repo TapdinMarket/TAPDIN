@@ -1,6 +1,6 @@
-// Single place to rename the product. "tapdıq" = "we found it" in Azerbaijani (working name).
+// Single place to rename the product. "tapdın" = "you found (it)" in Azerbaijani (working name).
 export const brand = {
-  name: 'tapdıq',
-  legalName: 'Tapdıq',
-  domain: 'tapdiq.az',
+  name: 'tapdın',
+  legalName: 'Tapdın',
+  domain: 'tapdin.az',
 };

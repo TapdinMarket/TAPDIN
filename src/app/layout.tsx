@@ -18,12 +18,12 @@ export async function generateMetadata(): Promise<Metadata> {
   };
 }
 
-export const viewport: Viewport = { themeColor: '#f6f5f1', width: 'device-width', initialScale: 1 };
+export const viewport: Viewport = { themeColor: '#060606', colorScheme: 'dark', width: 'device-width', initialScale: 1 };
 
 export default async function RootLayout({ children }: { children: ReactNode }) {
   const { locale, m } = await getI18n();
   return (
-    <html lang={locale} className={`${inter.variable} ${interTight.variable}`}>
+    <html lang={locale} className={`${inter.variable} ${interTight.variable}`} data-scroll-behavior="smooth">
       <body className="min-h-dvh">
         <I18nProvider locale={locale} m={m}>
           {children}

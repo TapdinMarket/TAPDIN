@@ -20,7 +20,7 @@ export function AdminNav({ items }: { items: { href: string; label: string; icon
             aria-current={active ? 'page' : undefined}
             className={cn(
               'flex shrink-0 items-center gap-2.5 rounded-control px-3 py-2.5 text-sm font-medium transition-colors',
-              active ? 'bg-ink text-white' : 'text-ink-soft hover:bg-ink/5',
+              active ? 'bg-ink text-paper' : 'text-ink-soft hover:bg-ink/5',
             )}
           >
             <Icon className="size-4" aria-hidden />

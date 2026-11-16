@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { calculateQuote, suggestCargoAzn, type QuoteInput } from './engine.ts';
+import { calculateOrderQuote, calculateQuote, estimateBasket, suggestCargoAzn, type QuoteInput } from './engine.ts';
 
 const base: QuoteInput = {
   unitPrice: 30,
@@ -59,4 +59,53 @@ test('no floating point drift on awkward values', () => {
 test('cargo suggestion respects minimum billable weight', () => {
   assert.equal(suggestCargoAzn({ weightKg: 0.2, minBillableWeightKg: 0.5, cargoPerKgUsd: 6, usdRate: 1.7 }), 5.1);
   assert.equal(suggestCargoAzn({ weightKg: 2, minBillableWeightKg: 0.5, cargoPerKgUsd: 6, usdRate: 1.7 }), 20.4);
+});
+
+test('multi-item order: a single line gives exactly the single-item result', () => {
+  const single = calculateQuote(base);
+  const order = calculateOrderQuote({
+    lines: [{ unitPrice: base.unitPrice, quantity: base.quantity, domesticShipping: base.domesticShipping, exchangeRate: base.exchangeRate }],
+    internationalShippingAzn: base.internationalShippingAzn,
+    commissionPercent: base.commissionPercent,
+    commissionBasis: base.commissionBasis,
+    minCommissionAzn: base.minCommissionAzn,
+    sourcingFeeAzn: base.sourcingFeeAzn,
+    customsChargesAzn: base.customsChargesAzn,
+    otherExpensesAzn: base.otherExpensesAzn,
+  });
+  assert.equal(order.totalAzn, single.totalAzn);
+  assert.equal(order.serviceFeeAzn, single.serviceFeeAzn);
+  assert.equal(order.lines[0].productCostAzn, single.productCostAzn);
+});
+
+test('multi-item order: lines in different currencies, cargo and minimum commission charged once', () => {
+  const q = calculateOrderQuote({
+    lines: [
+      { unitPrice: 100, quantity: 2, domesticShipping: 10, exchangeRate: 0.235 }, // 200 CNY + 10 CNY
+      { unitPrice: 20, quantity: 1, domesticShipping: 0, exchangeRate: 1.7 }, // 20 USD
+    ],
+    internationalShippingAzn: 12,
+    commissionPercent: 10,
+    commissionBasis: 'PRODUCT',
+    minCommissionAzn: 5,
+    sourcingFeeAzn: 0,
+    customsChargesAzn: 0,
+    otherExpensesAzn: 0,
+  });
+  assert.deepEqual(q.lines.map((l) => l.productCostAzn), [47, 34]);
+  assert.equal(q.productCostAzn, 81);
+  assert.equal(q.domesticShippingAzn, 2.35);
+  assert.equal(q.serviceFeeAzn, 8.1); // 10% of 81 — above the 5 AZN minimum, charged once
+  assert.equal(q.totalAzn, 103.45); // 81 + 2.35 + 12 + 8.10
+});
+
+test('basket estimate: combining items is never more expensive and saves the per-order minimums', () => {
+  const rules = { commissionPercent: 15, minCommissionAzn: 5, minBillableWeightKg: 0.5, cargoPerKgUsd: 6, usdRate: 1.7 };
+  const two = estimateBasket({ ...rules, items: [{ priceAzn: 10, weightKg: 0.2 }, { priceAzn: 12, weightKg: 0.2 }] });
+  // Separately: each pays 0.5 kg cargo (5.10) and the 5 AZN minimum fee. Together: one 0.5 kg minimum, one fee.
+  assert.equal(two.separately, 42.2); // (10 + 5.10 + 5) + (12 + 5.10 + 5)
+  assert.equal(two.together, 32.1); // 22 + 5.10 + 5
+  assert.equal(two.savings, 10.1);
+  const single = estimateBasket({ ...rules, items: [{ priceAzn: 50, weightKg: 1 }] });
+  assert.equal(single.savings, 0);
 });

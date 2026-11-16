@@ -9,6 +9,8 @@ export const settingSchemas = {
     commissionBasis: z.enum(['PRODUCT', 'PRODUCT_AND_DOMESTIC', 'SUBTOTAL']),
     /** Extra fee staff may add for hard-to-find products. */
     sourcingFeeAzn: z.number().min(0),
+    /** Optional parcel insurance offered with every quotation: % of the product value. 0 turns it off. */
+    insurancePercent: z.number().min(0).max(20).default(3),
   }),
   contact: z.object({
     phone: z.string().max(40),
@@ -30,12 +32,12 @@ export const settingSchemas = {
 export type Settings = { [K in keyof typeof settingSchemas]: z.infer<(typeof settingSchemas)[K]> };
 
 export const settingDefaults: Settings = {
-  general: { quoteValidityDays: 3, commissionBasis: 'PRODUCT', sourcingFeeAzn: 10 },
+  general: { quoteValidityDays: 3, commissionBasis: 'PRODUCT', sourcingFeeAzn: 10, insurancePercent: 3 },
   contact: {
-    phone: '+994 00 000 00 00',
-    whatsapp: '994000000000',
-    email: 'support@tapdiq.az',
-    instagram: 'tapdiq.az',
+    phone: '+994 99 221 14 88',
+    whatsapp: '994992211488',
+    email: 'tapdin@protonmail.com',
+    instagram: 'tapdin.az',
     address: 'Bakı, Azərbaycan',
   },
   payment: {
@@ -77,6 +79,7 @@ export const getCatalog = cache(async () => {
       key: r.key,
       name: r.name,
       enabled: r.enabled,
+      status: r.status,
       defaultCurrency: r.defaultCurrency,
       commissionPercent: Number(r.commissionPercent),
       minCommissionAzn: Number(r.minCommissionAzn),
@@ -93,7 +96,7 @@ export const getCatalog = cache(async () => {
       enabled: m.enabled,
       sortOrder: m.sortOrder,
     })),
-    rates: rates.map((r) => ({ currency: r.currency, rateToAzn: Number(r.rateToAzn), updatedAt: r.updatedAt })),
+    rates: rates.map((r) => ({ currency: r.currency, rateToAzn: Number(r.rateToAzn), updatedAt: r.updatedAt, source: r.source })),
   };
 });
 

@@ -1,11 +1,13 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
-import { ArrowLeft, ExternalLink, MessageCircle } from 'lucide-react';
+import { ArrowLeft, MessageCircle } from 'lucide-react';
 import { acceptQuotationAction, rejectQuotationAction, reportPaymentAction } from '@/app/actions/customer';
 import { ActionForm, SubmitButton } from '@/components/action-form';
 import { Breakdown } from '@/components/breakdown';
 import { EventList, MediaGrid, OrderTimeline } from '@/components/order-view';
+import { OrderItems } from '@/components/order-items';
+import { ItemDecision } from '@/components/item-decision';
 import { Badge, Card, CardHeader, Container, Field, Input, Row, Select, StatusBadge } from '@/components/ui';
 import { statusLabel } from '@/i18n/config';
 import { getI18n } from '@/i18n/server';
@@ -13,8 +15,9 @@ import { requireUser } from '@/lib/auth';
 import { db } from '@/lib/db';
 import { fmt, formatAzn, formatDate } from '@/lib/format';
 import { computeFinancials, num, orderNo, STATUS, syncQuotationExpiry } from '@/lib/orders';
-import { quoteLines, toQuoteView } from '@/lib/quote-view';
+import { itemLabel, quoteLines, toQuoteView } from '@/lib/quote-view';
 import { getSettings } from '@/lib/settings';
+import { DELAY_STATUSES } from '@/lib/notifications/messages';
 
 export const metadata: Metadata = { title: 'Order' };
 
@@ -27,14 +30,15 @@ export default async function OrderDetailPage({ params }: { params: Promise<{ id
   if (!exists) notFound();
   await syncQuotationExpiry(id);
 
-  const [{ m, locale }, order, statuses, settings, marketplaces] = await Promise.all([
+  const [{ m, locale }, order, statuses, settings, marketplaces, rateRows] = await Promise.all([
     getI18n(),
     db.order.findUniqueOrThrow({
       where: { id },
       include: {
         status: true,
+        items: { orderBy: { position: 'asc' } },
         media: { orderBy: { createdAt: 'asc' } },
-        quotations: { orderBy: { version: 'desc' } },
+        quotations: { orderBy: { version: 'desc' }, include: { lines: true } },
         payments: { orderBy: { createdAt: 'desc' } },
         charges: { orderBy: { createdAt: 'asc' } },
         tracking: { orderBy: { createdAt: 'asc' } },
@@ -44,7 +48,10 @@ export default async function OrderDetailPage({ params }: { params: Promise<{ id
     db.orderStatus.findMany({ orderBy: { sortOrder: 'asc' } }),
     getSettings(),
     db.marketplace.findMany({ select: { key: true, name: true } }),
+    db.exchangeRate.findMany({ select: { currency: true, rateToAzn: true } }),
   ]);
+  // Today's rates, only to show an AZN equivalent next to a price in a foreign currency.
+  const azn: Record<string, number> = Object.fromEntries(rateRows.map((r) => [r.currency, Number(r.rateToAzn)]));
 
   const d = m.detail;
   const number = orderNo(order.number);
@@ -54,9 +61,12 @@ export default async function OrderDetailPage({ params }: { params: Promise<{ id
   const shown = accepted ?? open ?? quotes[0];
   const earlier = quotes.filter((q) => q.id !== shown?.id);
   const f = computeFinancials(order);
-  const reference = order.media.filter((x) => x.kind === 'CUSTOMER_REFERENCE');
+  const itemName = (itemId: string, index: number) => `${index + 1}. ${itemLabel(order.items.find((x) => x.id === itemId) ?? { title: null, description: null }, m.dash.photoRequest)}`;
+  const headline = order.items.length > 1 ? fmt(m.dash.itemsCount, { n: order.items.length }) : itemLabel(order.items[0] ?? { title: null, description: null }, m.dash.photoRequest);
   const inspection = order.media.filter((x) => x.kind !== 'CUSTOMER_REFERENCE');
   const cancelled = order.statusKey === STATUS.CANCELLED;
+  // Out-of-stock decisions are possible only before money moves.
+  const paidOrReported = order.payments.some((p) => p.status === 'CONFIRMED' || p.status === 'PENDING');
 
   const reachedAt: Record<string, Date> = {};
   for (const e of [...order.events].reverse()) if (e.status) reachedAt[e.status] = e.createdAt;
@@ -82,12 +92,17 @@ export default async function OrderDetailPage({ params }: { params: Promise<{ id
             <span className="tabular text-sm text-muted">{d.order} {number}</span>
             <StatusBadge statusKey={order.statusKey} label={statusLabel(order.status, locale)} />
           </div>
-          <h1 className="mt-3 text-2xl font-semibold tracking-[-0.02em] break-words sm:text-3xl">{order.productTitle ?? order.productDescription ?? m.dash.photoRequest}</h1>
+          <h1 className="mt-3 text-2xl font-semibold tracking-[-0.02em] break-words sm:text-3xl">{headline}</h1>
           <p className="mt-1.5 text-sm text-muted">{fmt(d.placed, { date: formatDate(order.createdAt, locale) })}</p>
         </div>
       </header>
 
       {cancelled && <p className="mt-6 rounded-control bg-danger-soft px-4 py-3 text-sm text-danger">{d.cancelled}</p>}
+      {(DELAY_STATUSES as readonly string[]).includes(order.statusKey) && (
+        <p role="status" className="mt-6 rounded-control border border-warn/30 bg-warn-soft px-4 py-3 text-sm leading-relaxed text-warn">
+          <span className="font-semibold">{statusLabel(order.status, locale)}.</span> {d.delay[order.statusKey as keyof typeof d.delay]}
+        </p>
+      )}
 
       <div className="mt-8 grid gap-6 lg:grid-cols-[1fr_20rem] lg:items-start">
         <div className="space-y-6">
@@ -103,8 +118,8 @@ export default async function OrderDetailPage({ params }: { params: Promise<{ id
                 <p className="text-sm leading-relaxed text-muted">{m.quote.waiting}</p>
               ) : (
                 <>
-                  <Breakdown lines={quoteLines(shown, m, locale)} total={{ label: m.quote.total, value: formatAzn(shown.totalAzn, locale) }} />
-                  <p className="tabular mt-4 text-[12px] text-muted">{fmt(m.quote.rate, { cur: shown.currency, rate: shown.exchangeRate.toFixed(4) })}</p>
+                  <Breakdown lines={quoteLines(shown, m, locale, itemName)} total={{ label: m.quote.total, value: formatAzn(shown.totalAzn, locale) }} />
+                  <p className="tabular mt-4 text-[12px] text-muted">{[...new Map(shown.lines.map((l) => [l.currency, l.exchangeRate])).entries()].map(([cur, rate]) => fmt(m.quote.rate, { cur, rate: rate.toFixed(4) })).join(' · ')}</p>
                   {shown.noteToCustomer && (
                     <div className="mt-4 rounded-control bg-paper px-4 py-3 text-sm">
                       <p className="text-[12px] font-medium text-muted">{m.quote.note}</p>
@@ -115,8 +130,17 @@ export default async function OrderDetailPage({ params }: { params: Promise<{ id
                   {shown.status === 'REJECTED' && <p className="mt-4 text-sm text-muted">{m.quote.rejectedText}</p>}
                   {shown.status === 'SENT' && !cancelled && (
                     <div className="mt-6 flex flex-col gap-3 sm:flex-row">
-                      <ActionForm action={acceptQuotationAction} className="flex-1">
+                      <ActionForm action={acceptQuotationAction} className="flex-1 space-y-3">
                         <input type="hidden" name="quotationId" value={shown.id} />
+                        {shown.insuranceAzn > 0 && (
+                          <label className="flex cursor-pointer gap-3 rounded-control border border-line px-3.5 py-3 text-sm">
+                            <input type="checkbox" name="insurance" className="mt-0.5 size-4 shrink-0 accent-[var(--color-accent)]" />
+                            <span>
+                              <span className="font-medium">{fmt(m.quote.insuranceOffer, { amount: formatAzn(shown.insuranceAzn, locale) })}</span>
+                              <span className="mt-0.5 block text-[12px] leading-relaxed text-muted">{m.quote.insuranceText}</span>
+                            </span>
+                          </label>
+                        )}
                         <SubmitButton variant="accent" size="lg" className="w-full">{m.quote.accept}</SubmitButton>
                       </ActionForm>
                       <ActionForm action={rejectQuotationAction}>
@@ -251,31 +275,24 @@ export default async function OrderDetailPage({ params }: { params: Promise<{ id
             </div>
           </Card>
 
-          {/* ── Request details ── */}
+          {/* ── Items ── */}
           <Card>
-            <CardHeader title={d.product} />
-            <div className="p-5 sm:p-6">
-              <dl className="divide-y divide-line">
-                <Row label={d.source}>{marketplaces.find((x) => x.key === order.sourceMarketplace)?.name ?? (order.method === 'IMAGE' ? m.dash.photoRequest : d.unknownSource)}</Row>
-                {order.sourceUrl && (
-                  <Row label={d.link}>
-                    <a href={order.sourceUrl} target="_blank" rel="noopener noreferrer nofollow" className="inline-flex items-center gap-1.5 font-medium underline underline-offset-4">
-                      {d.openLink}
-                      <ExternalLink className="size-3.5" aria-hidden />
-                    </a>
-                  </Row>
-                )}
-                <Row label={d.quantity}>{order.quantity}</Row>
-                {order.variant && <Row label={d.variant}>{order.variant}</Row>}
-                {order.sizeColor && <Row label={d.sizeColor}>{order.sizeColor}</Row>}
-                {order.productDescription && <Row label={d.description}><span className="whitespace-pre-line">{order.productDescription}</span></Row>}
-                {order.instructions && <Row label={d.instructions}><span className="whitespace-pre-line">{order.instructions}</span></Row>}
-              </dl>
-              {reference.length > 0 && (
-                <>
-                  <p className="mt-5 mb-3 text-[13px] font-medium text-muted">{d.photos}</p>
-                  <MediaGrid media={reference} />
-                </>
+            <CardHeader title={order.items.length > 1 ? fmt(m.dash.itemsCount, { n: order.items.length }) : d.product} />
+            <div className="space-y-4 p-5 sm:p-6">
+              <OrderItems
+                items={order.items}
+                media={order.media}
+                marketplaces={marketplaces}
+                rates={azn}
+                m={m}
+                locale={locale}
+                clientPriceLabel={d.clientPrice}
+                extra={(item) => (item.unavailable && item.resolution === 'PENDING' && !paidOrReported ? <ItemDecision itemId={item.id} /> : null)}
+              />
+              {order.instructions && (
+                <dl className="divide-y divide-line">
+                  <Row label={d.instructions}><span className="whitespace-pre-line">{order.instructions}</span></Row>
+                </dl>
               )}
             </div>
           </Card>

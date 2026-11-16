@@ -35,7 +35,7 @@ export function OrderTimeline({
             <span
               className={cn(
                 'relative mt-0.5 flex size-6 items-center justify-center rounded-full border-2',
-                done && 'border-accent bg-accent text-white',
+                done && 'border-accent bg-accent text-on-accent',
                 current && 'border-accent bg-surface',
                 !done && !current && 'border-line-strong bg-surface',
               )}

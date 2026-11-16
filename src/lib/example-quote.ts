@@ -3,15 +3,19 @@ import type { BreakdownLine } from '@/components/breakdown';
 import type { Messages } from '@/i18n/messages/en';
 import { fmt, formatAzn, formatMoney } from './format';
 import { calculateQuote, suggestCargoAzn } from './pricing/engine';
+import { isOrderable } from './regions';
 import { getCatalog, getSettings } from './settings';
 
 /**
- * Illustrative quotation built from the *currently configured* rates of the first enabled region.
+ * Illustrative quotation built from the *currently configured* rates of the given region
+ * (or the first enabled one).
  * Always labelled as an example in the UI.
  */
-export async function getExampleQuote(m: Messages, locale: string) {
+export async function getExampleQuote(m: Messages, locale: string, regionKey?: string) {
   const [{ regions, rates }, { general }] = await Promise.all([getCatalog(), getSettings()]);
-  const region = regions.find((r) => r.enabled);
+  // Examples only for regions that can actually be ordered from.
+  const enabled = regions.filter(isOrderable);
+  const region = enabled.find((r) => r.key === regionKey) ?? enabled[0];
   const rate = rates.find((r) => r.currency === region?.defaultCurrency)?.rateToAzn;
   const usd = rates.find((r) => r.currency === 'USD')?.rateToAzn;
   if (!region || !rate || !usd) return null;

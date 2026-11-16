@@ -29,6 +29,9 @@ export default async function LoginPage({ searchParams }: { searchParams: Promis
           <Field label={m.auth.password}>
             <Input name="password" type="password" autoComplete="current-password" required />
           </Field>
+          <Link href="/forgot" className="-mt-1 block text-right text-[13px] text-ink-soft underline-offset-4 hover:text-ink hover:underline">
+            {m.auth.forgotLink}
+          </Link>
           <SubmitButton size="lg" className="mt-2 w-full">
             {m.auth.loginButton}
           </SubmitButton>

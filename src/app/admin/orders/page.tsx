@@ -6,6 +6,7 @@ import { getI18n } from '@/i18n/server';
 import { db } from '@/lib/db';
 import { formatAzn, formatDate } from '@/lib/format';
 import { num, orderNo } from '@/lib/orders';
+import { orderStores, orderSummary } from '@/lib/quote-view';
 
 const PAGE_SIZE = 30;
 
@@ -19,11 +20,11 @@ export default async function AdminOrdersPage({ searchParams }: { searchParams: 
   const where: Prisma.OrderWhereInput = {};
   if (status) where.statusKey = status;
   if (q) {
-    const number = Number(q.replace(/^tq-?/i, ''));
+    const number = Number(q.replace(/^t[dq]-?/i, '')); // TD-00012 (older links may still say TQ-)
     where.OR = [
       ...(Number.isInteger(number) && number > 0 ? [{ number }] : []),
-      { productTitle: { contains: q, mode: 'insensitive' } },
-      { productDescription: { contains: q, mode: 'insensitive' } },
+      { items: { some: { title: { contains: q, mode: 'insensitive' } } } },
+      { items: { some: { description: { contains: q, mode: 'insensitive' } } } },
       { user: { name: { contains: q, mode: 'insensitive' } } },
       { user: { email: { contains: q, mode: 'insensitive' } } },
       { user: { phone: { contains: q } } },
@@ -39,6 +40,7 @@ export default async function AdminOrdersPage({ searchParams }: { searchParams: 
       include: {
         status: true,
         user: { select: { name: true, email: true } },
+        items: { orderBy: { position: 'asc' }, select: { title: true, description: true, method: true, sourceMarketplace: true, quantity: true } },
         quotations: { where: { status: { in: ['SENT', 'ACCEPTED'] } }, orderBy: { version: 'desc' }, take: 1, select: { totalAzn: true } },
       },
     }),
@@ -90,8 +92,8 @@ export default async function AdminOrdersPage({ searchParams }: { searchParams: 
                       <span className="block max-w-40 truncate">{o.user.name}</span>
                       <span className="block max-w-40 truncate text-[12px] text-muted">{o.user.email}</span>
                     </td>
-                    <td className="px-4 py-3.5"><span className="block max-w-56 truncate">{o.productTitle ?? o.productDescription ?? '—'}</span></td>
-                    <td className="px-4 py-3.5 whitespace-nowrap text-ink-soft">{marketplaces.find((x) => x.key === o.sourceMarketplace)?.name ?? (o.method === 'IMAGE' ? m.dash.photoRequest : m.detail.unknownSource)}</td>
+                    <td className="px-4 py-3.5"><span className="block max-w-56 truncate">{orderSummary(o.items, m.dash.photoRequest)}</span></td>
+                    <td className="px-4 py-3.5 whitespace-nowrap text-ink-soft">{orderStores(o.items, marketplaces, m.dash.photoRequest, m.detail.unknownSource)}</td>
                     <td className="px-4 py-3.5"><StatusBadge statusKey={o.statusKey} label={statusLabel(o.status, locale)} /></td>
                     <td className="tabular px-4 py-3.5 whitespace-nowrap">{o.quotations[0] ? formatAzn(num(o.quotations[0].totalAzn), locale) : '—'}</td>
                     <td className="tabular py-3.5 pr-5 pl-4 whitespace-nowrap text-muted">{formatDate(o.createdAt, locale)}</td>

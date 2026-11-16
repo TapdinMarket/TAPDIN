@@ -6,29 +6,11 @@ import 'server-only';
  * A real adapter is added by implementing the interface and returning it from the factory —
  * nothing else in the app needs to change.
  *
- * No marketplace, payment, cargo or FX API access exists yet. Nothing here pretends otherwise.
+ * No marketplace API, payment, cargo or FX access exists yet. Nothing here pretends otherwise.
  */
 
-// ── Product data extraction (1688 / Taobao / Pinduoduo / independent stores) ──
-export type ExtractionResult =
-  | { status: 'ok'; title: string; priceText?: string; imageUrl?: string }
-  | { status: 'unavailable'; reason: 'no_adapter' | 'blocked' | 'error' };
-
-export interface ProductExtractor {
-  extract(url: string): Promise<ExtractionResult>;
-}
-
-const manualExtractor: ProductExtractor = {
-  // Staff open the link and fill in product details by hand.
-  async extract() {
-    return { status: 'unavailable', reason: 'no_adapter' };
-  },
-};
-
-export function getProductExtractor(_marketplaceKey: string | null): ProductExtractor {
-  // e.g. if (_marketplaceKey === 'taobao' && process.env.TAOBAO_APP_KEY) return new TaobaoExtractor();
-  return manualExtractor;
-}
+// ── Product data (photo + price preview) ──
+// Lives in src/lib/product-preview: allow-listed stores, SSRF-safe fetch, JSON-LD / Open Graph parsing.
 
 // ── Payments (Azerbaijani PSPs: e.g. Kapital Bank, PAŞA Bank, Payriff, Epoint...) ──
 export interface PaymentProvider {

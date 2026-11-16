@@ -8,3 +8,6 @@ export const isLocale = (v: unknown): v is Locale => typeof v === 'string' && (l
 type StatusLabels = { labelAz: string; labelRu: string; labelEn: string };
 export const statusLabel = (s: StatusLabels, locale: string) =>
   locale === 'ru' ? s.labelRu : locale === 'en' ? s.labelEn : s.labelAz;
+
+/** Localised name of a built-in region; regions added in admin fall back to their configured name. */
+export const regionLabel = (m: { regions: Record<string, string> }, r: { key: string; name: string }) => m.regions[r.key] ?? r.name;

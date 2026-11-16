@@ -9,6 +9,7 @@ import { getI18n } from '@/i18n/server';
 import { db } from '@/lib/db';
 import { formatAzn, formatDate } from '@/lib/format';
 import { num, orderNo, STATUS } from '@/lib/orders';
+import { orderSummary } from '@/lib/quote-view';
 
 export default async function AdminCustomerPage({ params }: { params: Promise<{ id: string }> }) {
   const [{ m, locale }, { id }] = await Promise.all([getI18n(), params]);
@@ -19,7 +20,7 @@ export default async function AdminCustomerPage({ params }: { params: Promise<{ 
     include: {
       orders: {
         orderBy: { createdAt: 'desc' },
-        include: { status: true, payments: { where: { status: 'CONFIRMED' }, select: { amount: true } } },
+        include: { status: true, items: { orderBy: { position: 'asc' }, select: { title: true, description: true, method: true, sourceMarketplace: true, quantity: true } }, payments: { where: { status: 'CONFIRMED' }, select: { amount: true } } },
       },
     },
   });
@@ -81,7 +82,7 @@ export default async function AdminCustomerPage({ params }: { params: Promise<{ 
                   <Link href={`/admin/orders/${o.id}`} className="flex flex-wrap items-center justify-between gap-2 px-5 py-3.5 text-sm hover:bg-paper/60 sm:px-6">
                     <span className="min-w-0">
                       <span className="tabular mr-3 text-muted">{orderNo(o.number)}</span>
-                      <span className="font-medium">{o.productTitle ?? o.productDescription ?? '—'}</span>
+                      <span className="font-medium">{orderSummary(o.items, m.dash.photoRequest)}</span>
                       <span className="tabular block text-[12px] text-muted">{formatDate(o.createdAt, locale)}</span>
                     </span>
                     <StatusBadge statusKey={o.statusKey} label={statusLabel(o.status, locale)} />
